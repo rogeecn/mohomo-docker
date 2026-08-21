@@ -47,6 +47,19 @@ Versions are pinned in the Dockerfile:
 
 SSClash is verified against the checksum file from its official release. Mihomo amd64 and arm64 archives are verified against pinned SHA-256 values. To update either component, update the version and checksums together, then run the complete test suite.
 
+## GitHub Container Registry
+
+The GitHub Actions workflow builds `linux/amd64` only. SSClash-Go and Mihomo are downloaded and checksum-verified during the Docker build, so the resulting container never downloads executable files at startup.
+
+The workflow runs tests before building, publishes to `ghcr.io/<github-owner>/mohomo-docker`, attaches SBOM and provenance, and creates these tags:
+
+- `latest` and `main` from the default branch;
+- the Git tag and major/minor tags from releases such as `v1.2.3`;
+- an immutable `sha-<commit>` tag;
+- pull-request tags for build validation only, without pushing.
+
+Keep the GHCR package visibility **private**. The workflow deliberately does not attempt to change package visibility. Making an image containing SSClash-Go available to third parties conflicts with the upstream binary license unless the copyright holder grants permission.
+
 ## Tests
 
 ```sh

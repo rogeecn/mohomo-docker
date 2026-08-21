@@ -22,3 +22,4 @@
 - Do not commit SSClash or Mihomo binaries to this repository.
 - The Dockerfile may link to official release URLs and users build the image for their own deployment.
 - Do not publish a prebuilt image containing SSClash without permission from its copyright holder.
+- GitHub Actions may push the amd64 image to private GHCR for this deployment; do not make the package public without that permission.

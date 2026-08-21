@@ -4,6 +4,8 @@ set -eu
 project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_root"
 
+./tests/workflow-contract.sh
+
 unformatted=$(gofmt -l cmd internal)
 if [ -n "$unformatted" ]; then
 	echo "Go files require formatting:" >&2
