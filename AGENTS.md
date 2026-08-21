@@ -4,6 +4,7 @@
 
 - Package the official SSClash-Go release binary with an official Mihomo core.
 - Run SSClash in `server` mode only: embedded Web UI plus Mihomo mixed proxy on port 7890.
+- Keep both `OPERATING_MODE=server` and `PROXY_MODE=none`; without the latter, SSClash injects a gateway listener during Web-managed start.
 - Do not add transparent gateway, TUN, firewall, policy-routing, or DNS-hijack behavior.
 - Keep Mihomo's controller private to the container; never publish port 9090.
 

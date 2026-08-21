@@ -23,7 +23,7 @@ func TestPrepareInitializesServerRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	if !result.CoreInitialized || !result.ConfigInitialized || !result.ServerModeChanged {
+	if !result.CoreInitialized || !result.ConfigInitialized || !result.ServerSettingsChanged {
 		t.Errorf("Prepare() result = %+v, want all initialization flags", result)
 	}
 
@@ -43,7 +43,7 @@ func TestPrepareInitializesServerRuntime(t *testing.T) {
 
 	assertFileContent(t, filepath.Join(root, "bin", "clash"), "mihomo-binary")
 	assertFileContent(t, filepath.Join(root, "config.yaml"), "mixed-port: 7890\n")
-	assertFileContent(t, filepath.Join(root, ".ssclash", "settings"), "OPERATING_MODE=server\n")
+	assertFileContent(t, filepath.Join(root, ".ssclash", "settings"), "OPERATING_MODE=server\nPROXY_MODE=none\n")
 
 	coreInfo, err := os.Stat(filepath.Join(root, "bin", "clash"))
 	if err != nil {
@@ -64,7 +64,7 @@ func TestPreparePreservesUserDataAndForcesServerMode(t *testing.T) {
 	}
 	writeFixture(t, filepath.Join(root, "bin"), "clash", "user-managed-core")
 	writeFixture(t, root, "config.yaml", "user: config\n")
-	writeFixture(t, filepath.Join(root, ".ssclash"), "settings", "LOG_LEVEL=debug\nOPERATING_MODE=gateway\n")
+	writeFixture(t, filepath.Join(root, ".ssclash"), "settings", "LOG_LEVEL=debug\nOPERATING_MODE=gateway\nPROXY_MODE=tproxy\n")
 
 	result, err := Prepare(Config{
 		Root:         root,
@@ -74,13 +74,13 @@ func TestPreparePreservesUserDataAndForcesServerMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	if result.CoreInitialized || result.ConfigInitialized || !result.ServerModeChanged {
+	if result.CoreInitialized || result.ConfigInitialized || !result.ServerSettingsChanged {
 		t.Errorf("Prepare() result = %+v, want only server mode changed", result)
 	}
 
 	assertFileContent(t, filepath.Join(root, "bin", "clash"), "user-managed-core")
 	assertFileContent(t, filepath.Join(root, "config.yaml"), "user: config\n")
-	assertFileContent(t, filepath.Join(root, ".ssclash", "settings"), "LOG_LEVEL=debug\nOPERATING_MODE=server\n")
+	assertFileContent(t, filepath.Join(root, ".ssclash", "settings"), "LOG_LEVEL=debug\nOPERATING_MODE=server\nPROXY_MODE=none\n")
 }
 
 func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
@@ -129,6 +129,22 @@ func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
 				writeFixture(t, filepath.Join(root, ".ssclash"), "settings", "OPERATING_MODE=gateway\nOPERATING_MODE=server\n")
 			},
 			wantErr: "multiple OPERATING_MODE",
+		},
+		{
+			name: "duplicate proxy mode",
+			config: Config{
+				Root:         filepath.Join(tempDir, "duplicate-proxy-mode"),
+				CoreSource:   coreSource,
+				ConfigSource: configSource,
+			},
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(root, ".ssclash"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeFixture(t, filepath.Join(root, ".ssclash"), "settings", "PROXY_MODE=tproxy\nPROXY_MODE=none\n")
+			},
+			wantErr: "multiple PROXY_MODE",
 		},
 	}
 

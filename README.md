@@ -34,7 +34,7 @@ The named volume `ssclash-data` is mounted at `/opt/clash` and stores:
 - subscription, rule-provider, and proxy-provider files;
 - the active Mihomo core and its runtime data.
 
-The bootstrap process creates missing files only. Existing Mihomo and configuration files are preserved, while `OPERATING_MODE` is explicitly enforced as `server`. Duplicate mode entries or empty runtime files cause startup to fail with a diagnostic message.
+The bootstrap process creates missing files only. Existing Mihomo and configuration files are preserved. It explicitly enforces `OPERATING_MODE=server` and `PROXY_MODE=none`; the latter prevents SSClash from synchronizing gateway-only TProxy, redirect, or TUN listeners into `config.yaml`. Duplicate mode entries or empty runtime files cause startup to fail with a diagnostic message.
 
 Resetting the volume deletes configuration and credentials. Inspect the exact Compose project and volume name before doing so.
 
@@ -54,7 +54,7 @@ SSClash is verified against the checksum file from its official release. Mihomo 
 ./tests/container-smoke.sh
 ```
 
-The unit suite enforces at least 65% statement coverage for bootstrap behavior. The container smoke test builds the image, validates the Mihomo configuration, starts the Web UI with all Linux capabilities dropped, and sends an HTTPS request through the mapped mixed proxy port.
+The unit suite enforces at least 65% statement coverage for bootstrap behavior. The container smoke test builds the image, validates the Mihomo configuration, starts the Web UI with all Linux capabilities dropped, authenticates to SSClash, starts Mihomo through the Web API, rejects gateway-listener/error regressions, and sends an HTTPS request through the mapped mixed proxy port.
 
 ## License boundary
 

@@ -30,11 +30,11 @@ func main() {
 		log.Fatalf("bootstrap: runtime preparation failed: %v", err)
 	}
 	log.Printf(
-		"bootstrap: ready root=%s core_initialized=%t config_initialized=%t server_mode_changed=%t",
+		"bootstrap: ready root=%s core_initialized=%t config_initialized=%t server_settings_changed=%t",
 		root,
 		result.CoreInitialized,
 		result.ConfigInitialized,
-		result.ServerModeChanged,
+		result.ServerSettingsChanged,
 	)
 
 	arguments := os.Args[1:]

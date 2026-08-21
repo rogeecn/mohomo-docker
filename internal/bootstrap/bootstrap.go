@@ -9,7 +9,15 @@ import (
 	"strings"
 )
 
-const operatingModeKey = "OPERATING_MODE="
+type enforcedSetting struct {
+	key   string
+	value string
+}
+
+var serverSettings = []enforcedSetting{
+	{key: "OPERATING_MODE=", value: "server"},
+	{key: "PROXY_MODE=", value: "none"},
+}
 
 var runtimeDirectories = []string{
 	"bin",
@@ -29,9 +37,9 @@ type Config struct {
 }
 
 type Result struct {
-	CoreInitialized   bool
-	ConfigInitialized bool
-	ServerModeChanged bool
+	CoreInitialized       bool
+	ConfigInitialized     bool
+	ServerSettingsChanged bool
 }
 
 func Prepare(config Config) (Result, error) {
@@ -65,9 +73,9 @@ func Prepare(config Config) (Result, error) {
 	if err != nil {
 		return result, fmt.Errorf("initialize config: %w", err)
 	}
-	result.ServerModeChanged, err = enforceServerMode(filepath.Join(root, ".ssclash", "settings"))
+	result.ServerSettingsChanged, err = enforceServerSettings(filepath.Join(root, ".ssclash", "settings"))
 	if err != nil {
-		return result, fmt.Errorf("enforce server mode: %w", err)
+		return result, fmt.Errorf("enforce server settings: %w", err)
 	}
 
 	return result, nil
@@ -117,7 +125,7 @@ func copyIfAbsent(source, target string, mode os.FileMode) (bool, error) {
 	return err == nil, err
 }
 
-func enforceServerMode(path string) (bool, error) {
+func enforceServerSettings(path string) (bool, error) {
 	content, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("read settings %q: %w", path, err)
@@ -127,20 +135,37 @@ func enforceServerMode(path string) (bool, error) {
 	if len(content) > 0 {
 		lines = strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
 	}
-	modeIndex := -1
+	indexes := make(map[string]int, len(serverSettings))
+	for _, setting := range serverSettings {
+		indexes[setting.key] = -1
+	}
 	for index, line := range lines {
-		if strings.HasPrefix(line, operatingModeKey) {
-			if modeIndex >= 0 {
-				return false, fmt.Errorf("multiple OPERATING_MODE entries in %q", path)
+		for _, setting := range serverSettings {
+			if !strings.HasPrefix(line, setting.key) {
+				continue
 			}
-			modeIndex = index
+			if indexes[setting.key] >= 0 {
+				return false, fmt.Errorf("multiple %s entries in %q", strings.TrimSuffix(setting.key, "="), path)
+			}
+			indexes[setting.key] = index
 		}
 	}
-	changed := modeIndex < 0 || lines[modeIndex] != operatingModeKey+"server"
-	if modeIndex >= 0 {
-		lines[modeIndex] = operatingModeKey + "server"
-	} else {
-		lines = append(lines, operatingModeKey+"server")
+	changed := false
+	for _, setting := range serverSettings {
+		expected := setting.key + setting.value
+		index := indexes[setting.key]
+		if index >= 0 {
+			if lines[index] != expected {
+				lines[index] = expected
+				changed = true
+			}
+			continue
+		}
+		lines = append(lines, expected)
+		changed = true
+	}
+	if !changed {
+		return false, nil
 	}
 
 	settings := strings.Join(lines, "\n") + "\n"
