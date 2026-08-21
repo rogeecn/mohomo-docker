@@ -1,0 +1,27 @@
+services:
+  ssclash:
+    build:
+      context: .
+    image: ${IMAGE_NAME:-mohomo-docker:local}
+    container_name: ${CONTAINER_NAME:-mohomo-docker}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-9091}:9091/tcp"
+      - "${PROXY_BIND:-0.0.0.0}:${PROXY_PORT:-7890}:7890/tcp"
+      - "${PROXY_BIND:-0.0.0.0}:${PROXY_PORT:-7890}:7890/udp"
+    volumes:
+      - ssclash-data:/opt/clash
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  ssclash-data:

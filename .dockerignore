@@ -1,0 +1,6 @@
+.git
+.env
+coverage.out
+tests
+README.md
+AGENTS.md
