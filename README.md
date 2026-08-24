@@ -1,6 +1,6 @@
 # mohomo-docker
 
-Minimal Mihomo service with the ACL4SSR `Online Full MultiMode` routing model. The host exposes the SSClash Web UI on port `9091` and the mixed proxy on port `7890`; Mihomo's controller remains private to the container.
+Minimal Mihomo service with the ACL4SSR `Online Full MultiMode` routing model. The host publishes the SSClash Web UI on loopback port `9091` and the mixed proxy on loopback port `7890` by default; Mihomo's controller remains private to the container.
 
 ## Quick start
 
@@ -12,14 +12,24 @@ docker compose up -d --build
 docker compose logs -f ssclash
 ```
 
-The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. A fresh volume refuses to start without an `SSCLASH_PASSWORD` of at least 12 characters; bootstrap uses SSClash's own `setpass` command before the Web listener starts. Open `http://<server>:9091` and log in with that password. A valid existing authentication file is preserved, so later starts do not require or replace the password. Proxy clients connect to either endpoint:
+The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. A fresh volume refuses to start without an `SSCLASH_PASSWORD` of at least 12 characters; bootstrap uses SSClash's own `setpass` command before the Web listener starts. On the Docker host, open `http://127.0.0.1:9091` and log in with that password. A valid existing authentication file is preserved, so later starts do not require or replace the password. Local proxy clients connect to either endpoint:
 
 ```text
-HTTP proxy:   http://<server>:7890
-SOCKS5 proxy: socks5://<server>:7890
+HTTP proxy:   http://127.0.0.1:7890
+SOCKS5 proxy: socks5://127.0.0.1:7890
 ```
 
-`WEB_BIND`, `WEB_PORT`, `PROXY_BIND`, and `PROXY_PORT` are optional deployment overrides; both services bind all host interfaces by default. Authentication prevents anonymous first-run setup, but the Web UI still serves plain HTTP: place it behind HTTPS and additional access control before exposing it to the Internet. Configure Mihomo proxy authentication before publishing port `7890` outside a trusted network.
+The Compose boundary fixes plaintext `9091` to host loopback. To provide the required external Web access, configure a host HTTPS reverse proxy to `127.0.0.1:${WEB_PORT:-9091}`; for example, a host-native Caddy configuration is:
+
+```caddyfile
+ssclash.example.com {
+    reverse_proxy 127.0.0.1:9091
+}
+```
+
+Replace the domain and ensure its DNS reaches the host; Caddy then obtains and serves the TLS certificate. Do not publish 9091 directly as public HTTP.
+
+`WEB_PORT`, `PROXY_BIND`, and `PROXY_PORT` are optional deployment overrides. Port 7890 also defaults to `127.0.0.1`; setting `PROXY_BIND=0.0.0.0` is the explicit public opt-in. The packaged Mihomo proxy has no client authentication, so use that opt-in only when a host firewall or network ACL restricts clients to a trusted range. Prefer binding `PROXY_BIND` to a specific trusted host address.
 
 ## Update and secret handling
 
@@ -56,7 +66,7 @@ The GitHub Actions workflow builds `linux/amd64`, runs tests first, publishes on
 ./tests/container-smoke.sh
 ```
 
-The unit suite checks strict fail-closed authentication-file validation, provider-link recovery, atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test verifies that a fresh volume without an administrator password never starts the Web UI, logs in through published port `9091`, checks the exact `7890`/`9091` port set, confirms that plaintext credentials are neither persisted nor logged, and repeats health and login checks after recreating the container with the same volume.
+The unit suite checks strict fail-closed authentication-file validation, provider-link recovery, atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test verifies loopback-only Compose defaults and proxy-only public opt-in, proves 7890/9091 are unreachable through a non-loopback host address, checks fresh-volume authentication and credential isolation, and repeats health and login checks after recreating the container with the same volume.
 
 ## License boundary
 
