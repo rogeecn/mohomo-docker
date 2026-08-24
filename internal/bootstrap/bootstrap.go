@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const maxSubscriptionSize = 16 << 20
+const (
+	maxSubscriptionSize    = 16 << 20
+	minAdminPasswordLength = 12
+)
 
 var errMihomoStateUncertain = errors.New("Mihomo subscription state could not be restored")
 
@@ -99,6 +102,63 @@ func Prepare(config Config) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func EnsureAdminPassword(root, binary, password string) (bool, error) {
+	root = filepath.Clean(root)
+	if root == "." || root == string(filepath.Separator) || !filepath.IsAbs(root) {
+		return false, fmt.Errorf("unsafe root %q", root)
+	}
+	passwordPath := filepath.Join(root, ".ssclash", "password")
+	configured, err := adminPasswordConfigured(passwordPath)
+	if err != nil {
+		return false, err
+	}
+	if configured {
+		return false, nil
+	}
+	if password == "" {
+		return false, errors.New("SSCLASH_PASSWORD is required to initialize a fresh volume")
+	}
+	if len(password) < minAdminPasswordLength {
+		return false, fmt.Errorf("SSCLASH_PASSWORD must be at least %d characters", minAdminPasswordLength)
+	}
+	if err := validateSource(binary, "SSClash binary"); err != nil {
+		return false, err
+	}
+
+	command := exec.Command(binary, "setpass", password)
+	command.Env = childEnvironment()
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Run(); err != nil {
+		return false, errors.New("SSClash password initialization failed")
+	}
+	configured, err = adminPasswordConfigured(passwordPath)
+	if err != nil {
+		return false, err
+	}
+	if !configured {
+		return false, errors.New("SSClash password initialization did not create an authentication file")
+	}
+	return true, nil
+}
+
+func adminPasswordConfigured(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect SSClash authentication file: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return false, errors.New("SSClash authentication file must be a non-empty regular file")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return false, fmt.Errorf("SSClash authentication file permissions are %o; want 600", info.Mode().Perm())
+	}
+	return true, nil
 }
 
 func Run(ctx context.Context, config RuntimeConfig) error {
@@ -336,9 +396,10 @@ func childEnvironment() []string {
 	environment := os.Environ()
 	result := environment[:0]
 	for _, entry := range environment {
-		if !strings.HasPrefix(entry, "SUBSCRIPTION_URL=") {
-			result = append(result, entry)
+		if strings.HasPrefix(entry, "SUBSCRIPTION_URL=") || strings.HasPrefix(entry, "SSCLASH_PASSWORD=") {
+			continue
 		}
+		result = append(result, entry)
 	}
 	return result
 }

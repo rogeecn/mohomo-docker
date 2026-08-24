@@ -33,12 +33,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("bootstrap: runtime preparation failed: %v", err)
 	}
+	adminPasswordInitialized, err := bootstrap.EnsureAdminPassword(root, ssclashBinary, os.Getenv("SSCLASH_PASSWORD"))
+	if err != nil {
+		log.Fatalf("bootstrap: admin authentication setup failed: %v", err)
+	}
 	log.Printf(
-		"bootstrap: ready root=%s core_initialized=%t config_initialized=%t server_settings_changed=%t",
+		"bootstrap: ready root=%s core_initialized=%t config_initialized=%t server_settings_changed=%t admin_password_initialized=%t",
 		root,
 		result.CoreInitialized,
 		result.ConfigInitialized,
 		result.ServerSettingsChanged,
+		adminPasswordInitialized,
 	)
 
 	subscriptionURL := os.Getenv("SUBSCRIPTION_URL")

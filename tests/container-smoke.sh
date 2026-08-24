@@ -4,22 +4,26 @@ set -eu
 image=${1:-mohomo-docker:smoke}
 suffix="$$"
 container="mohomo-docker-smoke-${suffix}"
+unconfigured="mohomo-docker-unconfigured-${suffix}"
 provider="mohomo-provider-smoke-${suffix}"
 network="mohomo-network-smoke-${suffix}"
 volume="mohomo-volume-smoke-${suffix}"
 provider_dir=""
+cookie=""
 secret="container-smoke-secret"
+admin_password="container-smoke-admin-password"
 
-case "$container:$provider:$network:$volume" in
-mohomo-docker-smoke-*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-volume-smoke-'*) ;;
+case "$container:$unconfigured:$provider:$network:$volume" in
+mohomo-docker-smoke-*':mohomo-docker-unconfigured-'*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-volume-smoke-'*) ;;
 *) echo "refusing unsafe cleanup targets" >&2; exit 1 ;;
 esac
 
 cleanup() {
-	docker container rm --force "$container" "$provider" >/dev/null 2>&1 || true
+	docker container rm --force "$container" "$unconfigured" "$provider" >/dev/null 2>&1 || true
 	docker volume rm "$volume" >/dev/null 2>&1 || true
 	docker network rm "$network" >/dev/null 2>&1 || true
 	[ -z "$provider_dir" ] || rm -rf "$provider_dir"
+	[ -z "$cookie" ] || rm -f "$cookie"
 }
 trap cleanup EXIT INT TERM
 
@@ -58,12 +62,49 @@ until docker exec "$provider" wget -qO- http://127.0.0.1:8080/provider.yaml >/de
 	fi
 	sleep 1
 done
+
+docker run --detach \
+	--name "$unconfigured" \
+	--network "$network" \
+	--cap-drop ALL \
+	--security-opt no-new-privileges:true \
+	--env "SUBSCRIPTION_URL=http://${provider}:8080/provider.yaml" \
+	--volume "$volume:/opt/clash" \
+	--publish 127.0.0.1::9091/tcp \
+	"$image" >/dev/null
+unconfigured_port=$(docker port "$unconfigured" 9091/tcp | awk -F: 'NR == 1 { print $NF }')
+attempt=0
+while [ "$(docker inspect --format '{{.State.Running}}' "$unconfigured")" = true ]; do
+	if curl --fail --silent --show-error --max-time 1 \
+		"http://127.0.0.1:${unconfigured_port}/setup" >/dev/null 2>&1; then
+		echo "fresh volume exposed anonymous setup" >&2
+		exit 1
+	fi
+	attempt=$((attempt + 1))
+	if [ "$attempt" -ge 10 ]; then
+		echo "fresh volume did not fail closed without SSCLASH_PASSWORD" >&2
+		exit 1
+	fi
+	sleep 1
+done
+if [ "$(docker inspect --format '{{.State.ExitCode}}' "$unconfigured")" -eq 0 ]; then
+	echo "fresh volume exited successfully without SSCLASH_PASSWORD" >&2
+	exit 1
+fi
+docker logs "$unconfigured" 2>&1 | grep -F 'SSCLASH_PASSWORD is required' >/dev/null
+if docker logs "$unconfigured" 2>&1 | grep -F 'web UI listening' >/dev/null; then
+	echo "fresh volume started the Web UI before authentication was configured" >&2
+	exit 1
+fi
+docker container rm "$unconfigured" >/dev/null
+
 docker run --detach \
 	--name "$container" \
 	--network "$network" \
 	--cap-drop ALL \
 	--security-opt no-new-privileges:true \
 	--env "SUBSCRIPTION_URL=http://${provider}:8080/provider.yaml?token=${secret}" \
+	--env "SSCLASH_PASSWORD=${admin_password}" \
 	--volume "$volume:/opt/clash" \
 	--publish 127.0.0.1::7890/tcp \
 	--publish 127.0.0.1::7890/udp \
@@ -90,7 +131,27 @@ if printf '%s\n' "$published" | grep -vE '^(7890/(tcp|udp)|9091/tcp)' >/dev/null
 	exit 1
 fi
 web_port=$(docker port "$container" 9091/tcp | awk -F: 'NR == 1 { print $NF }')
-curl --fail --silent --show-error "http://127.0.0.1:${web_port}/" >/dev/null
+setup_redirect=$(curl --silent --show-error --output /dev/null \
+	--write-out '%{http_code} %{redirect_url}' \
+	"http://127.0.0.1:${web_port}/setup")
+if [ "$setup_redirect" != "303 http://127.0.0.1:${web_port}/login" ]; then
+	echo "configured Web UI exposed setup: ${setup_redirect}" >&2
+	exit 1
+fi
+cookie=$(mktemp)
+login_html=$(curl --fail --silent --show-error --cookie-jar "$cookie" \
+	"http://127.0.0.1:${web_port}/login")
+login_csrf=$(printf '%s' "$login_html" | sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' | head -1)
+test -n "$login_csrf"
+curl --fail --silent --show-error \
+	--cookie "$cookie" \
+	--cookie-jar "$cookie" \
+	--request POST \
+	--data-urlencode "csrf=${login_csrf}" \
+	--data-urlencode "password=${admin_password}" \
+	"http://127.0.0.1:${web_port}/login" >/dev/null
+curl --fail --silent --show-error --cookie "$cookie" \
+	"http://127.0.0.1:${web_port}/config" | grep -F 'csrf-token' >/dev/null
 
 docker exec "$container" grep -Fx 'OPERATING_MODE=server' /opt/clash/.ssclash/settings >/dev/null
 docker exec "$container" grep -Fx 'PROXY_MODE=none' /opt/clash/.ssclash/settings >/dev/null
@@ -108,5 +169,13 @@ if docker logs "$container" 2>&1 | grep -F "$secret" >/dev/null; then
 	echo "subscription URL credential was written to logs" >&2
 	exit 1
 fi
+if docker exec "$container" grep -R -F "$admin_password" /opt/clash /dev/shm/mohomo >/dev/null 2>&1; then
+	echo "administrator password was written to runtime files" >&2
+	exit 1
+fi
+if docker logs "$container" 2>&1 | grep -F "$admin_password" >/dev/null; then
+	echo "administrator password was written to logs" >&2
+	exit 1
+fi
 
-echo "container smoke test passed: only ports 7890 and 9091 published; subscription credential not persisted or logged"
+echo "container smoke test passed: fresh volume fails closed; authenticated 9091 and proxy credentials are protected"

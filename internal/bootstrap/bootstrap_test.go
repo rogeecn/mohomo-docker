@@ -90,6 +90,68 @@ func TestPreparePreservesUserDataAndForcesServerMode(t *testing.T) {
 	assertFileContent(t, filepath.Join(root, ".ssclash", "settings"), "LOG_LEVEL=debug\nOPERATING_MODE=server\nPROXY_MODE=none\n")
 }
 
+func TestEnsureAdminPasswordFailsClosedOnFreshVolume(t *testing.T) {
+	t.Parallel()
+
+	_, err := EnsureAdminPassword(t.TempDir(), "unused", "")
+	if err == nil || !strings.Contains(err.Error(), "SSCLASH_PASSWORD") {
+		t.Fatalf("EnsureAdminPassword() error = %v, want missing password error", err)
+	}
+}
+
+func TestEnsureAdminPasswordInitializesOnlyWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(filepath.Join(root, ".ssclash"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary := writeFixture(t, filepath.Join(root, "bin"), "ssclash", `#!/bin/sh
+set -eu
+[ "$1" = setpass ]
+[ "$2" = fresh-volume-password ]
+password="$(dirname "$0")/../.ssclash/password"
+printf 'pbkdf2$test\n' > "$password"
+chmod 0600 "$password"
+`)
+	if err := os.Chmod(binary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	initialized, err := EnsureAdminPassword(root, binary, "fresh-volume-password")
+	if err != nil {
+		t.Fatalf("EnsureAdminPassword() error = %v", err)
+	}
+	if !initialized {
+		t.Fatal("EnsureAdminPassword() initialized = false, want true")
+	}
+	assertFileContent(t, filepath.Join(root, ".ssclash", "password"), "pbkdf2$test\n")
+
+	if err := os.Remove(binary); err != nil {
+		t.Fatal(err)
+	}
+	initialized, err = EnsureAdminPassword(root, binary, "replacement-password")
+	if err != nil {
+		t.Fatalf("EnsureAdminPassword() existing password error = %v", err)
+	}
+	if initialized {
+		t.Fatal("EnsureAdminPassword() replaced existing password")
+	}
+	assertFileContent(t, filepath.Join(root, ".ssclash", "password"), "pbkdf2$test\n")
+}
+
+func TestChildEnvironmentRemovesCredentials(t *testing.T) {
+	t.Setenv("SUBSCRIPTION_URL", "https://subscription.example.invalid/?token=secret")
+	t.Setenv("SSCLASH_PASSWORD", "secret-password")
+
+	environment := strings.Join(childEnvironment(), "\n")
+	for _, key := range []string{"SUBSCRIPTION_URL=", "SSCLASH_PASSWORD="} {
+		if strings.Contains(environment, key) {
+			t.Errorf("childEnvironment() retained %s", key)
+		}
+	}
+}
+
 func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
 	t.Parallel()
 

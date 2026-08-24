@@ -6,27 +6,28 @@ Minimal Mihomo service with the ACL4SSR `Online Full MultiMode` routing model. T
 
 ```sh
 cp .env.example .env
-# Replace only SUBSCRIPTION_URL in .env.
+# Generate a password, then set SUBSCRIPTION_URL and SSCLASH_PASSWORD in .env.
+openssl rand -base64 24
 docker compose up -d --build
 docker compose logs -f ssclash
 ```
 
-The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. Open `http://<server>:9091` to manage SSClash. Proxy clients connect to either endpoint:
+The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. A fresh volume refuses to start without an `SSCLASH_PASSWORD` of at least 12 characters; bootstrap uses SSClash's own `setpass` command before the Web listener starts. Open `http://<server>:9091` and log in with that password. Existing authentication files are preserved, so later starts do not require or replace the password. Proxy clients connect to either endpoint:
 
 ```text
 HTTP proxy:   http://<server>:7890
 SOCKS5 proxy: socks5://<server>:7890
 ```
 
-`WEB_BIND`, `WEB_PORT`, `PROXY_BIND`, and `PROXY_PORT` are optional deployment overrides; both services bind all host interfaces by default. Set the SSClash administrator password and place the Web UI behind HTTPS and additional access control before exposing it to the Internet. Configure Mihomo proxy authentication before publishing port `7890` outside a trusted network.
+`WEB_BIND`, `WEB_PORT`, `PROXY_BIND`, and `PROXY_PORT` are optional deployment overrides; both services bind all host interfaces by default. Authentication prevents anonymous first-run setup, but the Web UI still serves plain HTTP: place it behind HTTPS and additional access control before exposing it to the Internet. Configure Mihomo proxy authentication before publishing port `7890` outside a trusted network.
 
 ## Update and secret handling
 
 The bootstrap fetches the subscription once before startup and every hour thereafter. Each candidate is limited to 16 MiB and validated with the packaged Mihomo binary before an atomic replacement and hot reload. A failed reload restores and reloads the previous provider; if that recovery cannot be confirmed, both services stop instead of running with uncertain state.
 
-The subscription URL is read from `SUBSCRIPTION_URL`, removed from child-process environments, and never printed. The generated configuration contains only a local provider path. Subscription data lives under `/dev/shm/mohomo`, so neither the image nor the `/opt/clash` volume stores its URL, response, or node credentials. Container restarts intentionally fetch a fresh subscription instead of persisting credentials.
+The subscription URL and bootstrap administrator password are removed from child-process environments and never printed. The password is persisted only as SSClash's PBKDF2 authentication file. The generated configuration contains only a local provider path. Subscription data lives under `/dev/shm/mohomo`, so neither the image nor the `/opt/clash` volume stores its URL, response, or node credentials. Container restarts intentionally fetch a fresh subscription instead of persisting credentials.
 
-Do not commit `.env`; it is ignored by Git. Docker still exposes container environment variables to principals allowed to inspect the container, so restrict Docker daemon access.
+Do not commit `.env`; it is ignored by Git. Docker still exposes bootstrap environment variables to principals allowed to inspect the container, so restrict Docker daemon access.
 
 ## ACL4SSR rules
 
@@ -55,7 +56,7 @@ The GitHub Actions workflow builds `linux/amd64`, runs tests first, publishes on
 ./tests/container-smoke.sh
 ```
 
-The unit suite checks atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test builds the image, validates the generated configuration, reaches the Web UI through its published port, checks that only ports `7890` and `9091` are published, and verifies that the subscription credential is neither persisted nor logged.
+The unit suite checks fail-closed authentication initialization, atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test verifies that a fresh volume without an administrator password never starts the Web UI, then logs in through published port `9091`, checks the exact `7890`/`9091` port set, and confirms that plaintext credentials are neither persisted nor logged.
 
 ## License boundary
 
