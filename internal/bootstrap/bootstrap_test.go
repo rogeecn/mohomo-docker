@@ -282,16 +282,25 @@ func TestRunStopsServicesWhenRollbackReloadFails(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	runResult := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := Run(ctx, RuntimeConfig{
-		CoreBinary:      binary,
-		SSClashBinary:   binary,
-		ConfigSource:    config,
-		RuntimeDir:      filepath.Join(tempDir, "runtime"),
-		SubscriptionURL: server.URL,
-		UpdateInterval:  20 * time.Millisecond,
-	})
+	go func() {
+		runResult <- Run(ctx, RuntimeConfig{
+			CoreBinary:      binary,
+			SSClashBinary:   binary,
+			ConfigSource:    config,
+			RuntimeDir:      filepath.Join(tempDir, "runtime"),
+			SubscriptionURL: server.URL,
+			UpdateInterval:  20 * time.Millisecond,
+		})
+	}()
+	var err error
+	select {
+	case err = <-runResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not reach rollback failure")
+	}
 	if !errors.Is(err, errMihomoStateUncertain) {
 		t.Fatalf("Run() error = %v, want uncertain Mihomo state", err)
 	}
