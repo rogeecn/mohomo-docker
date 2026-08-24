@@ -24,6 +24,7 @@ func TestPrepareInitializesServerRuntime(t *testing.T) {
 
 	result, err := Prepare(Config{
 		Root:         root,
+		SSClashTemp:  filepath.Join(tempDir, "tmp"),
 		CoreSource:   coreSource,
 		ConfigSource: configSource,
 	})
@@ -75,6 +76,7 @@ func TestPreparePreservesUserDataAndForcesServerMode(t *testing.T) {
 
 	result, err := Prepare(Config{
 		Root:         root,
+		SSClashTemp:  filepath.Join(tempDir, "tmp"),
 		CoreSource:   writeFixture(t, tempDir, "mihomo", "image-core"),
 		ConfigSource: writeFixture(t, tempDir, "default.yaml", "image: config\n"),
 	})
@@ -111,7 +113,7 @@ set -eu
 [ "$1" = setpass ]
 [ "$2" = fresh-volume-password ]
 password="$(dirname "$0")/../.ssclash/password"
-printf 'pbkdf2$test\n' > "$password"
+printf 'pbkdf2$120000$0123456789abcdef0123456789abcdef$0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n' > "$password"
 chmod 0600 "$password"
 `)
 	if err := os.Chmod(binary, 0o755); err != nil {
@@ -125,7 +127,7 @@ chmod 0600 "$password"
 	if !initialized {
 		t.Fatal("EnsureAdminPassword() initialized = false, want true")
 	}
-	assertFileContent(t, filepath.Join(root, ".ssclash", "password"), "pbkdf2$test\n")
+	assertFileContent(t, filepath.Join(root, ".ssclash", "password"), validAdminPasswordHash)
 
 	if err := os.Remove(binary); err != nil {
 		t.Fatal(err)
@@ -137,7 +139,153 @@ chmod 0600 "$password"
 	if initialized {
 		t.Fatal("EnsureAdminPassword() replaced existing password")
 	}
-	assertFileContent(t, filepath.Join(root, ".ssclash", "password"), "pbkdf2$test\n")
+	assertFileContent(t, filepath.Join(root, ".ssclash", "password"), validAdminPasswordHash)
+}
+
+func TestAdminPasswordConfiguredRejectsUnsafeFiles(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name  string
+		setup func(t *testing.T, path string)
+	}{
+		{name: "mode 000", setup: passwordFileSetup(validAdminPasswordHash, 0o000)},
+		{name: "mode 0200", setup: passwordFileSetup(validAdminPasswordHash, 0o200)},
+		{name: "mode 0400", setup: passwordFileSetup(validAdminPasswordHash, 0o400)},
+		{name: "mode 0644", setup: passwordFileSetup(validAdminPasswordHash, 0o644)},
+		{name: "empty", setup: passwordFileSetup("", 0o600)},
+		{name: "invalid hash", setup: passwordFileSetup("pbkdf2$test\n", 0o600)},
+		{name: "non-hex hash", setup: passwordFileSetup("pbkdf2$120000$zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz$0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", 0o600)},
+		{name: "directory", setup: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlink", setup: func(t *testing.T, path string) {
+			t.Helper()
+			target := path + ".target"
+			passwordFileSetup(validAdminPasswordHash, 0o600)(t, target)
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "password")
+			testCase.setup(t, path)
+			if configured, err := adminPasswordConfigured(path); err == nil || configured {
+				t.Fatalf("adminPasswordConfigured() = %t, %v; want false, error", configured, err)
+			}
+		})
+	}
+}
+
+func TestAdminPasswordConfiguredRequiresOwner(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "password")
+	passwordFileSetup(validAdminPasswordHash, 0o600)(t, path)
+	for _, owner := range []struct {
+		name string
+		uid  uint32
+		gid  uint32
+	}{
+		{name: "UID", uid: uint32(os.Geteuid() + 1), gid: uint32(os.Getegid())},
+		{name: "GID", uid: uint32(os.Geteuid()), gid: uint32(os.Getegid() + 1)},
+	} {
+		t.Run(owner.name, func(t *testing.T) {
+			configured, err := adminPasswordConfiguredFor(path, owner.uid, owner.gid)
+			if err == nil || configured {
+				t.Fatalf("adminPasswordConfiguredFor() = %t, %v; want false, owner error", configured, err)
+			}
+		})
+	}
+}
+
+func TestAdminPasswordConfiguredAcceptsSecureFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "password")
+	passwordFileSetup(validAdminPasswordHash, 0o600)(t, path)
+	configured, err := adminPasswordConfigured(path)
+	if err != nil || !configured {
+		t.Fatalf("adminPasswordConfigured() = %t, %v; want true, nil", configured, err)
+	}
+}
+
+func TestPrepareRepairsManagedProviderSymlinks(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "data")
+	ssclashTemp := filepath.Join(tempDir, "tmp")
+	config := Config{
+		Root:         root,
+		SSClashTemp:  ssclashTemp,
+		CoreSource:   writeFixture(t, tempDir, "mihomo", "core"),
+		ConfigSource: writeFixture(t, tempDir, "config.yaml", "config"),
+	}
+	if _, err := Prepare(config); err != nil {
+		t.Fatalf("first Prepare() error = %v", err)
+	}
+	for _, directory := range []string{"rule-providers", "proxy-providers"} {
+		path := filepath.Join(root, directory)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(ssclashTemp, directory), path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := Prepare(config); err != nil {
+		t.Fatalf("second Prepare() error = %v", err)
+	}
+	for _, directory := range []string{"rule-providers", "proxy-providers"} {
+		info, err := os.Lstat(filepath.Join(root, directory))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() {
+			t.Errorf("%s mode = %s, want directory", directory, info.Mode())
+		}
+	}
+}
+
+func TestPrepareRejectsUnexpectedProviderSymlink(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "data")
+	ssclashTemp := filepath.Join(tempDir, "tmp")
+	config := Config{
+		Root:         root,
+		SSClashTemp:  ssclashTemp,
+		CoreSource:   writeFixture(t, tempDir, "mihomo", "core"),
+		ConfigSource: writeFixture(t, tempDir, "config.yaml", "config"),
+	}
+	if _, err := Prepare(config); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "rule-providers")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(tempDir, "unexpected"), path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Prepare(config); err == nil || !strings.Contains(err.Error(), "unexpected symlink") {
+		t.Fatalf("Prepare() error = %v, want unexpected symlink error", err)
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != filepath.Join(tempDir, "unexpected") {
+		t.Fatalf("unexpected symlink target = %q", target)
+	}
 }
 
 func TestChildEnvironmentRemovesCredentials(t *testing.T) {
@@ -169,6 +317,7 @@ func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
 			name: "filesystem root",
 			config: Config{
 				Root:         "/",
+				SSClashTemp:  filepath.Join(tempDir, "tmp"),
 				CoreSource:   coreSource,
 				ConfigSource: configSource,
 			},
@@ -178,6 +327,7 @@ func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
 			name: "missing core source",
 			config: Config{
 				Root:         filepath.Join(tempDir, "missing-core"),
+				SSClashTemp:  filepath.Join(tempDir, "tmp"),
 				CoreSource:   filepath.Join(tempDir, "does-not-exist"),
 				ConfigSource: configSource,
 			},
@@ -187,6 +337,7 @@ func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
 			name: "duplicate operating mode",
 			config: Config{
 				Root:         filepath.Join(tempDir, "duplicate-mode"),
+				SSClashTemp:  filepath.Join(tempDir, "tmp"),
 				CoreSource:   coreSource,
 				ConfigSource: configSource,
 			},
@@ -203,6 +354,7 @@ func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
 			name: "duplicate proxy mode",
 			config: Config{
 				Root:         filepath.Join(tempDir, "duplicate-proxy-mode"),
+				SSClashTemp:  filepath.Join(tempDir, "tmp"),
 				CoreSource:   coreSource,
 				ConfigSource: configSource,
 			},
@@ -401,6 +553,20 @@ func writeFixture(t *testing.T, directory, name, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+const validAdminPasswordHash = "pbkdf2$120000$0123456789abcdef0123456789abcdef$0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+
+func passwordFileSetup(content string, mode os.FileMode) func(t *testing.T, path string) {
+	return func(t *testing.T, path string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func assertFileContent(t *testing.T, path, want string) {

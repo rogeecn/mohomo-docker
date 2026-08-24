@@ -14,6 +14,7 @@ import (
 
 const (
 	defaultRoot         = "/opt/clash"
+	defaultSSClashTemp  = "/tmp/ssclash"
 	defaultCoreSource   = "/usr/local/lib/ssclash/clash"
 	defaultConfigSource = "/usr/local/share/ssclash/config.yaml"
 	ssclashBinary       = "/usr/local/bin/ssclash"
@@ -27,6 +28,7 @@ func main() {
 
 	result, err := bootstrap.Prepare(bootstrap.Config{
 		Root:         root,
+		SSClashTemp:  envOrDefault("SSCLASH_TMP", defaultSSClashTemp),
 		CoreSource:   defaultCoreSource,
 		ConfigSource: defaultConfigSource,
 	})
