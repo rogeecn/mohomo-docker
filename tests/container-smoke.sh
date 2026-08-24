@@ -67,6 +67,7 @@ docker run --detach \
 	--volume "$volume:/opt/clash" \
 	--publish 127.0.0.1::7890/tcp \
 	--publish 127.0.0.1::7890/udp \
+	--publish 127.0.0.1::9091/tcp \
 	"$image" >/dev/null
 
 attempt=0
@@ -81,11 +82,15 @@ until [ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = h
 done
 
 published=$(docker port "$container")
-printf '%s\n' "$published" | grep -E '^7890/(tcp|udp)' >/dev/null
-if printf '%s\n' "$published" | grep -vE '^7890/(tcp|udp)' >/dev/null; then
-	echo "container published a port other than 7890" >&2
+for port in 7890/tcp 7890/udp 9091/tcp; do
+	printf '%s\n' "$published" | grep -F "$port ->" >/dev/null
+done
+if printf '%s\n' "$published" | grep -vE '^(7890/(tcp|udp)|9091/tcp)' >/dev/null; then
+	echo "container published a port other than 7890 or 9091" >&2
 	exit 1
 fi
+web_port=$(docker port "$container" 9091/tcp | awk -F: 'NR == 1 { print $NF }')
+curl --fail --silent --show-error "http://127.0.0.1:${web_port}/" >/dev/null
 
 docker exec "$container" grep -Fx 'OPERATING_MODE=server' /opt/clash/.ssclash/settings >/dev/null
 docker exec "$container" grep -Fx 'PROXY_MODE=none' /opt/clash/.ssclash/settings >/dev/null
@@ -104,4 +109,4 @@ if docker logs "$container" 2>&1 | grep -F "$secret" >/dev/null; then
 	exit 1
 fi
 
-echo "container smoke test passed: only port 7890 published; subscription credential not persisted or logged"
+echo "container smoke test passed: only ports 7890 and 9091 published; subscription credential not persisted or logged"

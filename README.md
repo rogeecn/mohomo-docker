@@ -1,6 +1,6 @@
 # mohomo-docker
 
-Minimal Mihomo service with the ACL4SSR `Online Full MultiMode` routing model. The host exposes only mixed proxy port `7890`; SSClash and Mihomo's controller remain loopback-only inside the container.
+Minimal Mihomo service with the ACL4SSR `Online Full MultiMode` routing model. The host exposes the SSClash Web UI on port `9091` and the mixed proxy on port `7890`; Mihomo's controller remains private to the container.
 
 ## Quick start
 
@@ -11,14 +11,14 @@ docker compose up -d --build
 docker compose logs -f ssclash
 ```
 
-The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. Clients connect to either endpoint:
+The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. Open `http://<server>:9091` to manage SSClash. Proxy clients connect to either endpoint:
 
 ```text
 HTTP proxy:   http://<server>:7890
 SOCKS5 proxy: socks5://<server>:7890
 ```
 
-`PROXY_BIND` and `PROXY_PORT` are optional deployment overrides. Configure Mihomo proxy authentication before publishing port `7890` outside a trusted network.
+`WEB_BIND`, `WEB_PORT`, `PROXY_BIND`, and `PROXY_PORT` are optional deployment overrides; both services bind all host interfaces by default. Set the SSClash administrator password and place the Web UI behind HTTPS and additional access control before exposing it to the Internet. Configure Mihomo proxy authentication before publishing port `7890` outside a trusted network.
 
 ## Update and secret handling
 
@@ -55,7 +55,7 @@ The GitHub Actions workflow builds `linux/amd64`, runs tests first, publishes on
 ./tests/container-smoke.sh
 ```
 
-The unit suite checks atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test builds the image, validates the generated configuration, checks that only port `7890` is published, and verifies that the subscription credential is neither persisted nor logged.
+The unit suite checks atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test builds the image, validates the generated configuration, reaches the Web UI through its published port, checks that only ports `7890` and `9091` are published, and verifies that the subscription credential is neither persisted nor logged.
 
 ## License boundary
 
