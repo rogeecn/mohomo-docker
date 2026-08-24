@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"os"
-	"path/filepath"
+	"os/signal"
 	"syscall"
+	"time"
 
 	"git.ipao.vip/rogee/mohomo-docker/internal/bootstrap"
 )
@@ -14,6 +17,7 @@ const (
 	defaultCoreSource   = "/usr/local/lib/ssclash/clash"
 	defaultConfigSource = "/usr/local/share/ssclash/config.yaml"
 	ssclashBinary       = "/usr/local/bin/ssclash"
+	defaultRuntimeDir   = "/dev/shm/mohomo"
 )
 
 func main() {
@@ -37,14 +41,23 @@ func main() {
 		result.ServerSettingsChanged,
 	)
 
-	arguments := os.Args[1:]
-	if len(arguments) == 0 {
-		arguments = []string{"serve"}
+	subscriptionURL := os.Getenv("SUBSCRIPTION_URL")
+	if subscriptionURL == "" {
+		log.Fatal("bootstrap: SUBSCRIPTION_URL is required")
 	}
-	argv := append([]string{filepath.Base(ssclashBinary)}, arguments...)
-	log.Printf("bootstrap: exec path=%s command=%s", ssclashBinary, arguments[0])
-	if err := syscall.Exec(ssclashBinary, argv, os.Environ()); err != nil {
-		log.Fatalf("bootstrap: exec failed: %v", err)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err = bootstrap.Run(ctx, bootstrap.RuntimeConfig{
+		CoreBinary:      defaultCoreSource,
+		SSClashBinary:   ssclashBinary,
+		ConfigSource:    defaultConfigSource,
+		RuntimeDir:      defaultRuntimeDir,
+		SubscriptionURL: subscriptionURL,
+		UpdateInterval:  time.Hour,
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatalf("bootstrap: service failed: %v", err)
 	}
 }
 

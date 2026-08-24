@@ -7,16 +7,205 @@ ipv6: false
 external-controller: 127.0.0.1:9090
 
 profile:
-  store-selected: true
-  store-fake-ip: true
+  store-selected: false
+  store-fake-ip: false
 
-proxies: []
+proxy-providers:
+  subscription:
+    type: file
+    path: ./subscription.yaml
+    health-check:
+      enable: true
+      url: http://www.gstatic.com/generate_204
+      interval: 300
+      lazy: true
 
 proxy-groups:
-  - name: PROXY
+  - name: 🚀 节点选择
     type: select
-    proxies:
-      - DIRECT
+    proxies: [♻️ 自动选择, 🔯 故障转移, 🔮 负载均衡, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换, DIRECT]
+  - name: 🚀 手动切换
+    type: select
+    use: [subscription]
+  - name: ♻️ 自动选择
+    type: url-test
+    use: [subscription]
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+  - name: 🔯 故障转移
+    type: fallback
+    use: [subscription]
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 🔮 负载均衡
+    type: load-balance
+    use: [subscription]
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    strategy: consistent-hashing
+  - name: 🇭🇰 香港节点
+    type: url-test
+    use: [subscription]
+    filter: "(?i)(港|HK|Hong ?Kong)"
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 🇨🇳 台湾节点
+    type: url-test
+    use: [subscription]
+    filter: "(?i)(台|TW|Taiwan)"
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 🇸🇬 狮城节点
+    type: url-test
+    use: [subscription]
+    filter: "(?i)(新加坡|坡|狮城|SG|Singapore)"
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 🇯🇵 日本节点
+    type: url-test
+    use: [subscription]
+    filter: "(?i)(日本|东京|大阪|JP|Japan)"
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 🇺🇲 美国节点
+    type: url-test
+    use: [subscription]
+    filter: "(?i)(美|US|United ?States|Los ?Angeles|Seattle)"
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 🇰🇷 韩国节点
+    type: url-test
+    use: [subscription]
+    filter: "(?i)(韩|韓|KR|Korea|Seoul)"
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 🎥 奈飞节点
+    type: select
+    use: [subscription]
+    filter: "(?i)(NF|奈飞|解锁|Netflix|Media)"
+  - name: 📲 电报消息
+    type: select
+    proxies: [🚀 节点选择, ♻️ 自动选择, 🇸🇬 狮城节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换, DIRECT]
+  - name: 💬 Ai平台
+    type: select
+    proxies: [🚀 节点选择, ♻️ 自动选择, 🇸🇬 狮城节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换, DIRECT]
+  - name: 📹 油管视频
+    type: select
+    proxies: [🚀 节点选择, ♻️ 自动选择, 🇸🇬 狮城节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换, DIRECT]
+  - name: 🎥 奈飞视频
+    type: select
+    proxies: [🎥 奈飞节点, 🚀 节点选择, ♻️ 自动选择, 🇸🇬 狮城节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换, DIRECT]
+  - name: 📺 巴哈姆特
+    type: select
+    proxies: [🇨🇳 台湾节点, 🚀 节点选择, 🚀 手动切换, DIRECT]
+  - name: 📺 哔哩哔哩
+    type: select
+    proxies: [🎯 全球直连, 🇨🇳 台湾节点, 🇭🇰 香港节点]
+  - name: 🌍 国外媒体
+    type: select
+    proxies: [🚀 节点选择, ♻️ 自动选择, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换, DIRECT]
+  - name: 🌏 国内媒体
+    type: select
+    proxies: [DIRECT, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🚀 手动切换]
+  - name: 📢 谷歌FCM
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, 🇺🇲 美国节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇰🇷 韩国节点, 🚀 手动切换]
+  - name: Ⓜ️ 微软Bing
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, 🇺🇲 美国节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇰🇷 韩国节点, 🚀 手动切换]
+  - name: Ⓜ️ 微软云盘
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, 🇺🇲 美国节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇰🇷 韩国节点, 🚀 手动切换]
+  - name: Ⓜ️ 微软服务
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, 🇺🇲 美国节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇰🇷 韩国节点, 🚀 手动切换]
+  - name: 🍎 苹果服务
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, 🇺🇲 美国节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇰🇷 韩国节点, 🚀 手动切换]
+  - name: 🎮 游戏平台
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, 🇺🇲 美国节点, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇰🇷 韩国节点, 🚀 手动切换]
+  - name: 🎶 网易音乐
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, ♻️ 自动选择]
+  - name: 🎯 全球直连
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, ♻️ 自动选择]
+  - name: 🛑 广告拦截
+    type: select
+    proxies: [REJECT, DIRECT]
+  - name: 🍃 应用净化
+    type: select
+    proxies: [REJECT, DIRECT]
+  - name: 🐟 漏网之鱼
+    type: select
+    proxies: [🚀 节点选择, ♻️ 自动选择, DIRECT, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换]
+
+rule-providers:
+  LocalAreaNetwork: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/LocalAreaNetwork.yaml}
+  UnBan: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/UnBan.yaml}
+  BanAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/BanAD.yaml}
+  BanProgramAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/BanProgramAD.yaml}
+  GoogleFCM: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/GoogleFCM.yaml}
+  GoogleCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/GoogleCN.yaml}
+  SteamCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/SteamCN.yaml}
+  Bing: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Bing.yaml}
+  OneDrive: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/OneDrive.yaml}
+  Microsoft: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Microsoft.yaml}
+  Apple: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Apple.yaml}
+  Telegram: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Telegram.yaml}
+  AI: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/AI.yaml}
+  OpenAi: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/OpenAi.yaml}
+  NetEaseMusic: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/NetEaseMusic.yaml}
+  Epic: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Epic.yaml}
+  Origin: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Origin.yaml}
+  Sony: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Sony.yaml}
+  Steam: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Steam.yaml}
+  Nintendo: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Nintendo.yaml}
+  YouTube: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/YouTube.yaml}
+  Netflix: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Netflix.yaml}
+  Bahamut: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Bahamut.yaml}
+  BilibiliHMT: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/BilibiliHMT.yaml}
+  Bilibili: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Bilibili.yaml}
+  ChinaMedia: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaMedia.yaml}
+  ProxyMedia: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ProxyMedia.yaml}
+  ProxyGFWlist: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ProxyGFWlist.yaml}
+  ChinaDomain: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaDomain.yaml}
+  ChinaCompanyIp: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaCompanyIp.yaml}
+  Download: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Download.yaml}
 
 rules:
-  - MATCH,PROXY
+  - RULE-SET,LocalAreaNetwork,🎯 全球直连
+  - RULE-SET,UnBan,🎯 全球直连
+  - RULE-SET,BanAD,🛑 广告拦截
+  - RULE-SET,BanProgramAD,🍃 应用净化
+  - RULE-SET,GoogleFCM,📢 谷歌FCM
+  - RULE-SET,GoogleCN,🎯 全球直连
+  - RULE-SET,SteamCN,🎯 全球直连
+  - RULE-SET,Bing,Ⓜ️ 微软Bing
+  - RULE-SET,OneDrive,Ⓜ️ 微软云盘
+  - RULE-SET,Microsoft,Ⓜ️ 微软服务
+  - RULE-SET,Apple,🍎 苹果服务
+  - RULE-SET,Telegram,📲 电报消息
+  - RULE-SET,AI,💬 Ai平台
+  - RULE-SET,OpenAi,💬 Ai平台
+  - RULE-SET,NetEaseMusic,🎶 网易音乐
+  - RULE-SET,Epic,🎮 游戏平台
+  - RULE-SET,Origin,🎮 游戏平台
+  - RULE-SET,Sony,🎮 游戏平台
+  - RULE-SET,Steam,🎮 游戏平台
+  - RULE-SET,Nintendo,🎮 游戏平台
+  - RULE-SET,YouTube,📹 油管视频
+  - RULE-SET,Netflix,🎥 奈飞视频
+  - RULE-SET,Bahamut,📺 巴哈姆特
+  - RULE-SET,BilibiliHMT,📺 哔哩哔哩
+  - RULE-SET,Bilibili,📺 哔哩哔哩
+  - RULE-SET,ChinaMedia,🌏 国内媒体
+  - RULE-SET,ProxyMedia,🌍 国外媒体
+  - RULE-SET,ProxyGFWlist,🚀 节点选择
+  - RULE-SET,ChinaDomain,🎯 全球直连
+  - RULE-SET,ChinaCompanyIp,🎯 全球直连
+  - RULE-SET,Download,🎯 全球直连
+  - GEOIP,CN,🎯 全球直连
+  - MATCH,🐟 漏网之鱼

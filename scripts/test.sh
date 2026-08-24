@@ -24,5 +24,5 @@ echo "unit test coverage: ${coverage}%"
 go test ./...
 
 if command -v docker >/dev/null 2>&1; then
-	docker compose config --quiet
+	SUBSCRIPTION_URL=https://subscription.example.invalid/mihomo docker compose config --quiet
 fi

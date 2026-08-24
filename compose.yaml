@@ -6,8 +6,9 @@ services:
     container_name: ${CONTAINER_NAME:-mohomo-docker}
     restart: unless-stopped
     init: true
+    environment:
+      SUBSCRIPTION_URL: ${SUBSCRIPTION_URL:?set SUBSCRIPTION_URL in .env}
     ports:
-      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-9091}:9091/tcp"
       - "${PROXY_BIND:-0.0.0.0}:${PROXY_PORT:-7890}:7890/tcp"
       - "${PROXY_BIND:-0.0.0.0}:${PROXY_PORT:-7890}:7890/udp"
     volumes:

@@ -1,13 +1,24 @@
 package bootstrap
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
+
+const maxSubscriptionSize = 16 << 20
+
+var errMihomoStateUncertain = errors.New("Mihomo subscription state could not be restored")
 
 type enforcedSetting struct {
 	key   string
@@ -40,6 +51,15 @@ type Result struct {
 	CoreInitialized       bool
 	ConfigInitialized     bool
 	ServerSettingsChanged bool
+}
+
+type RuntimeConfig struct {
+	CoreBinary      string
+	SSClashBinary   string
+	ConfigSource    string
+	RuntimeDir      string
+	SubscriptionURL string
+	UpdateInterval  time.Duration
 }
 
 func Prepare(config Config) (Result, error) {
@@ -79,6 +99,260 @@ func Prepare(config Config) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func Run(ctx context.Context, config RuntimeConfig) error {
+	if err := validateSubscriptionURL(config.SubscriptionURL); err != nil {
+		return err
+	}
+	if config.UpdateInterval <= 0 {
+		return errors.New("subscription update interval must be positive")
+	}
+	runtimeDir := filepath.Clean(config.RuntimeDir)
+	if !filepath.IsAbs(runtimeDir) || runtimeDir == string(filepath.Separator) {
+		return fmt.Errorf("unsafe runtime directory %q", config.RuntimeDir)
+	}
+	for path, label := range map[string]string{
+		config.CoreBinary:    "Mihomo core",
+		config.SSClashBinary: "SSClash binary",
+		config.ConfigSource:  "config source",
+	} {
+		if err := validateSource(path, label); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return fmt.Errorf("create in-memory runtime directory: %w", err)
+	}
+
+	runtimeConfig := filepath.Join(runtimeDir, "config.yaml")
+	if err := copyFile(config.ConfigSource, runtimeConfig, 0o600); err != nil {
+		return fmt.Errorf("prepare in-memory config: %w", err)
+	}
+	activeSubscription := filepath.Join(runtimeDir, "subscription.yaml")
+	client := &http.Client{Timeout: 30 * time.Second}
+	validate := func(candidate string) error {
+		return validateSubscription(ctx, config, runtimeConfig, candidate)
+	}
+	reload := func(ctx context.Context) error {
+		return reloadSubscription(ctx, client)
+	}
+	if err := updateSubscription(ctx, client, config.SubscriptionURL, activeSubscription, validate); err != nil {
+		return fmt.Errorf("initial subscription update failed")
+	}
+	if err := validateMihomoConfig(ctx, config.CoreBinary, runtimeDir, runtimeConfig); err != nil {
+		return errors.New("generated Mihomo configuration failed validation")
+	}
+
+	serviceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ssclash := serviceCommand(serviceCtx, config.SSClashBinary, "serve")
+	mihomo := serviceCommand(serviceCtx, config.CoreBinary, "-d", runtimeDir, "-f", runtimeConfig)
+	if err := ssclash.Start(); err != nil {
+		return fmt.Errorf("start SSClash: %w", err)
+	}
+	if err := mihomo.Start(); err != nil {
+		cancel()
+		_ = ssclash.Wait()
+		return fmt.Errorf("start Mihomo: %w", err)
+	}
+	log.Printf("bootstrap: services started mode=server subscription_update_interval=%s", config.UpdateInterval)
+
+	type processResult struct {
+		name string
+		err  error
+	}
+	exits := make(chan processResult, 2)
+	go func() { exits <- processResult{name: "SSClash", err: ssclash.Wait()} }()
+	go func() { exits <- processResult{name: "Mihomo", err: mihomo.Wait()} }()
+	ticker := time.NewTicker(config.UpdateInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-exits
+			<-exits
+			return ctx.Err()
+		case result := <-exits:
+			cancel()
+			<-exits
+			if result.err == nil {
+				return fmt.Errorf("%s exited", result.name)
+			}
+			return fmt.Errorf("%s exited: %w", result.name, result.err)
+		case <-ticker.C:
+			if err := updateAndReload(ctx, client, config, activeSubscription, validate, reload); errors.Is(err, errMihomoStateUncertain) {
+				log.Print("bootstrap: subscription rollback failed; stopping services")
+				cancel()
+				<-exits
+				<-exits
+				return err
+			} else if err != nil {
+				log.Print("bootstrap: subscription update rejected; keeping previous valid configuration")
+				continue
+			}
+			log.Print("bootstrap: subscription updated and reloaded")
+		}
+	}
+}
+
+func validateSubscriptionURL(raw string) error {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return errors.New("SUBSCRIPTION_URL must be an absolute HTTP(S) URL")
+	}
+	if parsed.User != nil {
+		return errors.New("SUBSCRIPTION_URL must not contain user information")
+	}
+	return nil
+}
+
+func updateSubscription(ctx context.Context, client *http.Client, endpoint, target string, validate func(string) error) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return errors.New("create subscription request")
+	}
+	request.Header.Set("Accept", "application/yaml, text/yaml, text/plain")
+	request.Header.Set("User-Agent", "mihomo")
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("subscription request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("subscription endpoint returned HTTP %d", response.StatusCode)
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, maxSubscriptionSize+1))
+	if err != nil {
+		return errors.New("read subscription response")
+	}
+	if len(content) == 0 || len(content) > maxSubscriptionSize {
+		return errors.New("subscription response is empty or too large")
+	}
+
+	candidate := filepath.Join(filepath.Dir(target), ".subscription-candidate.yaml")
+	if err := atomicWrite(candidate, 0o600, func(output *os.File) error {
+		_, err := output.Write(content)
+		return err
+	}); err != nil {
+		return fmt.Errorf("write subscription candidate: %w", err)
+	}
+	defer os.Remove(candidate)
+	if err := validate(candidate); err != nil {
+		return errors.New("subscription candidate failed Mihomo validation")
+	}
+	if err := os.Rename(candidate, target); err != nil {
+		return fmt.Errorf("activate subscription candidate: %w", err)
+	}
+	return nil
+}
+
+func validateSubscription(ctx context.Context, config RuntimeConfig, runtimeConfig, candidate string) error {
+	content, err := os.ReadFile(runtimeConfig)
+	if err != nil {
+		return err
+	}
+	candidateConfig := strings.Replace(string(content), "path: ./subscription.yaml", "path: ./"+filepath.Base(candidate), 1)
+	if candidateConfig == string(content) {
+		return errors.New("subscription provider path is missing from config")
+	}
+	path := filepath.Join(config.RuntimeDir, ".candidate-config.yaml")
+	if err := atomicWrite(path, 0o600, func(output *os.File) error {
+		_, err := output.WriteString(candidateConfig)
+		return err
+	}); err != nil {
+		return err
+	}
+	defer os.Remove(path)
+	return validateMihomoConfig(ctx, config.CoreBinary, config.RuntimeDir, path)
+}
+
+func validateMihomoConfig(ctx context.Context, binary, runtimeDir, configPath string) error {
+	command := exec.CommandContext(ctx, binary, "-t", "-d", runtimeDir, "-f", configPath)
+	command.Env = childEnvironment()
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Run(); err != nil {
+		return errors.New("Mihomo validation failed")
+	}
+	return nil
+}
+
+func updateAndReload(ctx context.Context, client *http.Client, config RuntimeConfig, target string, validate func(string) error, reload func(context.Context) error) error {
+	previous, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	if err := updateSubscription(ctx, client, config.SubscriptionURL, target, validate); err != nil {
+		return err
+	}
+	if err := reload(ctx); err == nil {
+		return nil
+	}
+	if rollbackErr := atomicWrite(target, 0o600, func(output *os.File) error {
+		_, writeErr := output.Write(previous)
+		return writeErr
+	}); rollbackErr != nil {
+		return fmt.Errorf("%w: restore previous subscription file: %v", errMihomoStateUncertain, rollbackErr)
+	}
+	if err := reload(ctx); err != nil {
+		return fmt.Errorf("%w: reload previous subscription", errMihomoStateUncertain)
+	}
+	return errors.New("new subscription reload failed; previous subscription restored")
+}
+
+func reloadSubscription(ctx context.Context, client *http.Client) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://127.0.0.1:9090/providers/proxies/subscription", nil)
+	if err != nil {
+		return errors.New("create Mihomo reload request")
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("Mihomo reload request failed")
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("Mihomo reload returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func serviceCommand(ctx context.Context, binary string, arguments ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, binary, arguments...)
+	command.Env = childEnvironment()
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Cancel = func() error {
+		return command.Process.Signal(syscall.SIGTERM)
+	}
+	command.WaitDelay = 10 * time.Second
+	return command
+}
+
+func childEnvironment() []string {
+	environment := os.Environ()
+	result := environment[:0]
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, "SUBSCRIPTION_URL=") {
+			result = append(result, entry)
+		}
+	}
+	return result
+}
+
+func copyFile(source, target string, mode os.FileMode) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	return atomicWrite(target, mode, func(output *os.File) error {
+		_, err := io.Copy(output, input)
+		return err
+	})
 }
 
 func validateSource(path, label string) error {

@@ -37,3 +37,27 @@ func TestSeededConfigExposesOnlyServerListeners(t *testing.T) {
 		}
 	}
 }
+
+func TestSeededConfigUsesLocalACL4SSRRulesAndMemorySubscription(t *testing.T) {
+	t.Parallel()
+
+	content, err := os.ReadFile("../../config/config.yaml")
+	if err != nil {
+		t.Fatalf("read seeded config: %v", err)
+	}
+	config := string(content)
+	for _, required := range []string{
+		"path: ./subscription.yaml",
+		"RULE-SET,LocalAreaNetwork,🎯 全球直连",
+		"RULE-SET,BanAD,🛑 广告拦截",
+		"RULE-SET,ProxyGFWlist,🚀 节点选择",
+		"MATCH,🐟 漏网之鱼",
+	} {
+		if !strings.Contains(config, required) {
+			t.Errorf("seeded config is missing %q", required)
+		}
+	}
+	if strings.Contains(config, "raw.githubusercontent.com") || strings.Contains(config, "type: http") {
+		t.Error("seeded config depends on an online rule or subscription provider")
+	}
+}

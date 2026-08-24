@@ -1,10 +1,17 @@
 package bootstrap
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestPrepareInitializesServerRuntime(t *testing.T) {
@@ -159,6 +166,158 @@ func TestPrepareRejectsUnsafeOrAmbiguousState(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateSubscriptionKeepsPreviousValidFile(t *testing.T) {
+	t.Parallel()
+
+	response := "proxies:\n  - name: valid\n"
+	var responseLock sync.RWMutex
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		responseLock.RLock()
+		defer responseLock.RUnlock()
+		_, _ = writer.Write([]byte(response))
+	}))
+	defer server.Close()
+
+	target := filepath.Join(t.TempDir(), "subscription.yaml")
+	validate := func(path string) error {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(content), "invalid") {
+			return errors.New("invalid provider")
+		}
+		return nil
+	}
+	if err := updateSubscription(context.Background(), server.Client(), server.URL, target, validate); err != nil {
+		t.Fatalf("initial updateSubscription() error = %v", err)
+	}
+	responseLock.Lock()
+	response = "invalid"
+	responseLock.Unlock()
+	if err := updateSubscription(context.Background(), server.Client(), server.URL, target, validate); err == nil {
+		t.Fatal("updateSubscription() accepted invalid replacement")
+	}
+	assertFileContent(t, target, "proxies:\n  - name: valid\n")
+}
+
+func TestSubscriptionErrorsDoNotExposeURL(t *testing.T) {
+	t.Parallel()
+
+	secretURL := "https://subscription.example.invalid/feed?token=do-not-log"
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return nil, errors.New(request.URL.String())
+	})}
+	err := updateSubscription(context.Background(), client, secretURL, filepath.Join(t.TempDir(), "subscription.yaml"), func(string) error { return nil })
+	if err == nil {
+		t.Fatal("updateSubscription() error = nil")
+	}
+	if strings.Contains(err.Error(), "do-not-log") || strings.Contains(err.Error(), secretURL) {
+		t.Fatalf("updateSubscription() leaked subscription URL: %v", err)
+	}
+}
+
+func TestUpdateAndReloadRestoresRuntimeAfterAmbiguousFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("proxies:\n  - name: updated\n"))
+	}))
+	defer server.Close()
+
+	for _, testCase := range []struct {
+		name      string
+		recover   bool
+		wantFatal bool
+	}{
+		{name: "rollback reload succeeds", recover: true},
+		{name: "rollback reload fails", wantFatal: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			target := writeFixture(t, t.TempDir(), "subscription.yaml", "proxies:\n  - name: previous\n")
+			var applied []string
+			reload := func(context.Context) error {
+				content, err := os.ReadFile(target)
+				if err != nil {
+					return err
+				}
+				applied = append(applied, string(content))
+				if len(applied) == 1 || !testCase.recover {
+					return errors.New("connection lost after server applied provider")
+				}
+				return nil
+			}
+
+			err := updateAndReload(context.Background(), server.Client(), RuntimeConfig{SubscriptionURL: server.URL}, target, func(string) error { return nil }, reload)
+			if err == nil {
+				t.Fatal("updateAndReload() error = nil")
+			}
+			if got := errors.Is(err, errMihomoStateUncertain); got != testCase.wantFatal {
+				t.Fatalf("errors.Is(state uncertain) = %t, want %t: %v", got, testCase.wantFatal, err)
+			}
+			if len(applied) != 2 || !strings.Contains(applied[0], "updated") || !strings.Contains(applied[1], "previous") {
+				t.Fatalf("reload sequence = %q, want updated then previous", applied)
+			}
+			assertFileContent(t, target, "proxies:\n  - name: previous\n")
+		})
+	}
+}
+
+func TestRunStopsServicesWhenRollbackReloadFails(t *testing.T) {
+	tempDir := t.TempDir()
+	binary := writeFixture(t, tempDir, "fake-service", "#!/bin/sh\nif [ \"$1\" = -t ]; then exit 0; fi\nexec sleep 3600\n")
+	if err := os.Chmod(binary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := writeFixture(t, tempDir, "config.yaml", "proxy-providers:\n  subscription:\n    type: file\n    path: ./subscription.yaml\n")
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		name := "updated"
+		if requests.Add(1) == 1 {
+			name = "initial"
+		}
+		_, _ = writer.Write([]byte("proxies:\n  - name: " + name + "\n"))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := Run(ctx, RuntimeConfig{
+		CoreBinary:      binary,
+		SSClashBinary:   binary,
+		ConfigSource:    config,
+		RuntimeDir:      filepath.Join(tempDir, "runtime"),
+		SubscriptionURL: server.URL,
+		UpdateInterval:  20 * time.Millisecond,
+	})
+	if !errors.Is(err, errMihomoStateUncertain) {
+		t.Fatalf("Run() error = %v, want uncertain Mihomo state", err)
+	}
+	if requests.Load() < 2 {
+		t.Fatalf("subscription requests = %d, want initial fetch and timed update", requests.Load())
+	}
+	assertFileContent(t, filepath.Join(tempDir, "runtime", "subscription.yaml"), "proxies:\n  - name: initial\n")
+}
+
+func TestValidateSubscriptionURL(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"", "relative/path", "ftp://example.com/feed", "https://user@example.com/feed"} {
+		if err := validateSubscriptionURL(raw); err == nil {
+			t.Errorf("validateSubscriptionURL(%q) error = nil", raw)
+		}
+	}
+	if err := validateSubscriptionURL("https://example.com/feed"); err != nil {
+		t.Fatalf("validateSubscriptionURL() error = %v", err)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
 
 func writeFixture(t *testing.T, directory, name, content string) string {

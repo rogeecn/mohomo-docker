@@ -47,6 +47,20 @@ RUN case "${TARGETARCH}" in \
     gzip -d mihomo.gz; \
     chmod 0755 mihomo
 
+FROM alpine:${ALPINE_VERSION} AS acl4ssr-assets
+ARG ACL4SSR_REF=6e27259b8625e360699c014f98f978ee7408c644
+ARG ACL4SSR_SHA256=72229e2f0a38fc9776720a20dd4ecb44fdd0b0704bbf1f5141732562a237bff2
+RUN apk add --no-cache ca-certificates curl
+RUN curl --fail --show-error --silent --location --retry 3 \
+      --output /tmp/acl4ssr.tar.gz \
+      "https://github.com/ACL4SSR/ACL4SSR/archive/${ACL4SSR_REF}.tar.gz"; \
+    printf '%s  %s\n' "${ACL4SSR_SHA256}" /tmp/acl4ssr.tar.gz | sha256sum -c -; \
+    mkdir -p /out/rules; \
+    tar -xzf /tmp/acl4ssr.tar.gz -C /out/rules --strip-components=3 \
+      "ACL4SSR-${ACL4SSR_REF}/Clash/Providers"; \
+    tar -xOzf /tmp/acl4ssr.tar.gz "ACL4SSR-${ACL4SSR_REF}/LICENCE" \
+      > /out/ACL4SSR-LICENSE
+
 FROM alpine:${ALPINE_VERSION}
 RUN apk add --no-cache ca-certificates curl gzip tzdata \
     && addgroup -S ssclash \
@@ -56,17 +70,19 @@ RUN apk add --no-cache ca-certificates curl gzip tzdata \
 COPY --from=bootstrap-builder /out/bootstrap /usr/local/bin/bootstrap
 COPY --from=release-assets /assets/ssclash /usr/local/bin/ssclash
 COPY --from=release-assets /assets/mihomo /usr/local/lib/ssclash/clash
+COPY --from=acl4ssr-assets /out/rules /usr/local/share/ssclash/rules
+COPY --from=acl4ssr-assets /out/ACL4SSR-LICENSE /usr/local/share/licenses/ACL4SSR-LICENSE
 COPY config/config.yaml /usr/local/share/ssclash/config.yaml
 
 ENV SSCLASH_ROOT=/opt/clash \
     SSCLASH_TMP=/tmp/ssclash \
     SSCLASH_PLATFORM=linux \
-    SSCLASH_ADDR=:9091
+    SSCLASH_ADDR=127.0.0.1:9091 \
+    SAFE_PATHS=/usr/local/share/ssclash
 
 USER ssclash
 VOLUME ["/opt/clash"]
-EXPOSE 9091/tcp 7890/tcp 7890/udp
+EXPOSE 7890/tcp 7890/udp
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=4 \
-    CMD curl --fail --silent --show-error http://127.0.0.1:9091/ >/dev/null
+    CMD curl --fail --silent --show-error http://127.0.0.1:9090/version >/dev/null
 ENTRYPOINT ["/usr/local/bin/bootstrap"]
-CMD ["serve"]

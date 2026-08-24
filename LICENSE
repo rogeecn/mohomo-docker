@@ -22,3 +22,5 @@ SOFTWARE.
 
 This license covers only the original files in this repository. Downloaded
 SSClash-Go and Mihomo binaries remain subject to their respective licenses.
+ACL4SSR rule files are packaged from their pinned upstream revision and remain
+subject to ACL4SSR's CC BY-SA 4.0 license, included in the built image.
