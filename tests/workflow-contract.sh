@@ -13,6 +13,7 @@ grep -F 'packages: write' "$workflow" >/dev/null
 grep -F 'ghcr.io/${{ github.repository }}' "$workflow" >/dev/null
 grep -F 'platforms: linux/amd64' "$workflow" >/dev/null
 grep -F 'needs: test' "$workflow" >/dev/null
+grep -F 'cache-to: type=gha,mode=max,ignore-error=true' "$workflow" >/dev/null
 # Match the GitHub expression literally.
 # shellcheck disable=SC2016
 grep -F 'push: ${{ github.event_name != '\''pull_request'\'' }}' "$workflow" >/dev/null

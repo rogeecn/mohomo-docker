@@ -52,6 +52,12 @@ func TestSeededConfigUsesLocalACL4SSRRulesAndMemorySubscription(t *testing.T) {
 		"RULE-SET,BanAD,🛑 广告拦截",
 		"RULE-SET,ProxyGFWlist,🚀 节点选择",
 		"MATCH,🐟 漏网之鱼",
+		"GoogleCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/GoogleCN.yaml}",
+		"Bing: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Bing.yaml}",
+		"OneDrive: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/OneDrive.yaml}",
+		"Microsoft: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Microsoft.yaml}",
+		"Telegram: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Telegram.yaml}",
+		"ChinaCompanyIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaCompanyIp.yaml}",
 	} {
 		if !strings.Contains(config, required) {
 			t.Errorf("seeded config is missing %q", required)

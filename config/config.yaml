@@ -148,13 +148,13 @@ rule-providers:
   BanAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/BanAD.yaml}
   BanProgramAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/BanProgramAD.yaml}
   GoogleFCM: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/GoogleFCM.yaml}
-  GoogleCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/GoogleCN.yaml}
+  GoogleCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/GoogleCN.yaml}
   SteamCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/SteamCN.yaml}
-  Bing: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Bing.yaml}
-  OneDrive: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/OneDrive.yaml}
-  Microsoft: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Microsoft.yaml}
+  Bing: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Bing.yaml}
+  OneDrive: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/OneDrive.yaml}
+  Microsoft: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Microsoft.yaml}
   Apple: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Apple.yaml}
-  Telegram: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Telegram.yaml}
+  Telegram: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Telegram.yaml}
   AI: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/AI.yaml}
   OpenAi: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/OpenAi.yaml}
   NetEaseMusic: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/NetEaseMusic.yaml}
@@ -172,7 +172,7 @@ rule-providers:
   ProxyMedia: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ProxyMedia.yaml}
   ProxyGFWlist: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ProxyGFWlist.yaml}
   ChinaDomain: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaDomain.yaml}
-  ChinaCompanyIp: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaCompanyIp.yaml}
+  ChinaCompanyIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaCompanyIp.yaml}
   Download: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Download.yaml}
 
 rules:
