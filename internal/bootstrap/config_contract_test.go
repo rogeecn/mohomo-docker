@@ -58,12 +58,14 @@ func TestSeededConfigUsesLocalACL4SSRRulesAndMemorySubscription(t *testing.T) {
 		"Microsoft: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Microsoft.yaml}",
 		"Telegram: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Telegram.yaml}",
 		"ChinaCompanyIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaCompanyIp.yaml}",
+		"ChinaIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaIp.yaml}",
+		"RULE-SET,ChinaIp,🎯 全球直连",
 	} {
 		if !strings.Contains(config, required) {
 			t.Errorf("seeded config is missing %q", required)
 		}
 	}
-	if strings.Contains(config, "raw.githubusercontent.com") || strings.Contains(config, "type: http") {
+	if strings.Contains(config, "raw.githubusercontent.com") || strings.Contains(config, "type: http") || strings.Contains(config, "GEOIP,CN,") {
 		t.Error("seeded config depends on an online rule or subscription provider")
 	}
 }

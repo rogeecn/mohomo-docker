@@ -296,7 +296,7 @@ func Run(ctx context.Context, config RuntimeConfig) error {
 		return reloadSubscription(ctx, client)
 	}
 	if err := updateSubscription(ctx, client, config.SubscriptionURL, activeSubscription, validate); err != nil {
-		return fmt.Errorf("initial subscription update failed")
+		return fmt.Errorf("initial subscription update failed: %w", err)
 	}
 	if err := validateMihomoConfig(ctx, config.CoreBinary, runtimeDir, runtimeConfig); err != nil {
 		return errors.New("generated Mihomo configuration failed validation")

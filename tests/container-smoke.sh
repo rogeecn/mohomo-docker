@@ -93,11 +93,13 @@ if [ "$public_bindings" -ne 2 ] || [ "$loopback_bindings" -ne 1 ]; then
 fi
 
 docker build --tag "$image" .
-docker run --rm --entrypoint /usr/local/lib/ssclash/clash "$image" \
-	-t -d /usr/local/share/ssclash -f /usr/local/share/ssclash/config.yaml >/dev/null 2>&1 && {
-	echo "config validation unexpectedly passed without a subscription provider" >&2
-	exit 1
-}
+docker run --rm --network none --entrypoint /bin/sh "$image" -c '
+	set -eu
+	runtime=$(mktemp -d)
+	cp /usr/local/share/ssclash/config.yaml "$runtime/config.yaml"
+	printf "proxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" > "$runtime/subscription.yaml"
+	/usr/local/lib/ssclash/clash -t -d "$runtime" -f "$runtime/config.yaml"
+' >/dev/null
 
 provider_dir=$(mktemp -d)
 printf '%s\n' \

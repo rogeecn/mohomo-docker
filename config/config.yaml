@@ -173,6 +173,7 @@ rule-providers:
   ProxyGFWlist: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ProxyGFWlist.yaml}
   ChinaDomain: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaDomain.yaml}
   ChinaCompanyIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaCompanyIp.yaml}
+  ChinaIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaIp.yaml}
   Download: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Download.yaml}
 
 rules:
@@ -207,5 +208,5 @@ rules:
   - RULE-SET,ChinaDomain,🎯 全球直连
   - RULE-SET,ChinaCompanyIp,🎯 全球直连
   - RULE-SET,Download,🎯 全球直连
-  - GEOIP,CN,🎯 全球直连
+  - RULE-SET,ChinaIp,🎯 全球直连
   - MATCH,🐟 漏网之鱼
