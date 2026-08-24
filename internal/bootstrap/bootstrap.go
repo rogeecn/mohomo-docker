@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +17,10 @@ import (
 	"time"
 )
 
-const maxSubscriptionSize = 16 << 20
+const (
+	maxSubscriptionSize    = 16 << 20
+	minAdminPasswordLength = 12
+)
 
 var errMihomoStateUncertain = errors.New("Mihomo subscription state could not be restored")
 
@@ -35,14 +39,15 @@ var runtimeDirectories = []string{
 	".ssclash",
 	"configs",
 	"local-rules",
-	"rule-providers",
-	"proxy-providers",
 	"subscriptions",
 	"ui",
 }
 
+var managedProviderDirectories = []string{"rule-providers", "proxy-providers"}
+
 type Config struct {
 	Root         string
+	SSClashTemp  string
 	CoreSource   string
 	ConfigSource string
 }
@@ -71,6 +76,10 @@ func Prepare(config Config) (Result, error) {
 	if !filepath.IsAbs(root) {
 		return result, fmt.Errorf("root must be absolute: %q", config.Root)
 	}
+	ssclashTemp := filepath.Clean(config.SSClashTemp)
+	if !filepath.IsAbs(ssclashTemp) || ssclashTemp == string(filepath.Separator) {
+		return result, fmt.Errorf("unsafe SSClash temporary directory %q", config.SSClashTemp)
+	}
 	if err := validateSource(config.CoreSource, "core source"); err != nil {
 		return result, err
 	}
@@ -81,6 +90,11 @@ func Prepare(config Config) (Result, error) {
 	for _, directory := range runtimeDirectories {
 		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
 			return result, fmt.Errorf("create runtime directory %s: %w", directory, err)
+		}
+	}
+	for _, directory := range managedProviderDirectories {
+		if err := reconcileManagedProviderDirectory(root, ssclashTemp, directory); err != nil {
+			return result, err
 		}
 	}
 
@@ -99,6 +113,150 @@ func Prepare(config Config) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func EnsureAdminPassword(root, binary, password string) (bool, error) {
+	root = filepath.Clean(root)
+	if root == "." || root == string(filepath.Separator) || !filepath.IsAbs(root) {
+		return false, fmt.Errorf("unsafe root %q", root)
+	}
+	passwordPath := filepath.Join(root, ".ssclash", "password")
+	configured, err := adminPasswordConfigured(passwordPath)
+	if err != nil {
+		return false, err
+	}
+	if configured {
+		return false, nil
+	}
+	if password == "" {
+		return false, errors.New("SSCLASH_PASSWORD is required to initialize a fresh volume")
+	}
+	if len(password) < minAdminPasswordLength {
+		return false, fmt.Errorf("SSCLASH_PASSWORD must be at least %d characters", minAdminPasswordLength)
+	}
+	if err := validateSource(binary, "SSClash binary"); err != nil {
+		return false, err
+	}
+
+	command := exec.Command(binary, "setpass", password)
+	command.Env = childEnvironment()
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Run(); err != nil {
+		return false, errors.New("SSClash password initialization failed")
+	}
+	configured, err = adminPasswordConfigured(passwordPath)
+	if err != nil {
+		return false, err
+	}
+	if !configured {
+		return false, errors.New("SSClash password initialization did not create an authentication file")
+	}
+	return true, nil
+}
+
+func adminPasswordConfigured(path string) (bool, error) {
+	return adminPasswordConfiguredFor(path, uint32(os.Geteuid()), uint32(os.Getegid()))
+}
+
+func adminPasswordConfiguredFor(path string, expectedUID, expectedGID uint32) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect SSClash authentication file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, errors.New("SSClash authentication file must be a regular file")
+	}
+	if info.Mode().Perm() != 0o600 {
+		return false, fmt.Errorf("SSClash authentication file permissions are %o; want 600", info.Mode().Perm())
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false, errors.New("SSClash authentication file ownership could not be verified")
+	}
+	if stat.Uid != expectedUID || stat.Gid != expectedGID {
+		return false, fmt.Errorf("SSClash authentication file owner is %d:%d; want %d:%d", stat.Uid, stat.Gid, expectedUID, expectedGID)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("read SSClash authentication file: %w", err)
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return false, fmt.Errorf("inspect opened SSClash authentication file: %w", err)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return false, errors.New("SSClash authentication file changed while being verified")
+	}
+	content, err := io.ReadAll(io.LimitReader(file, 257))
+	if err != nil {
+		return false, fmt.Errorf("read SSClash authentication file: %w", err)
+	}
+	if len(content) > 256 {
+		return false, errors.New("SSClash authentication file is too large")
+	}
+	if err := validateAdminPasswordHash(content); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func validateAdminPasswordHash(content []byte) error {
+	text := string(content)
+	if !strings.HasSuffix(text, "\n") {
+		return errors.New("SSClash authentication file has an invalid password hash")
+	}
+	parts := strings.Split(strings.TrimSuffix(text, "\n"), "$")
+	if len(parts) != 4 || parts[0] != "pbkdf2" || parts[1] != "120000" || len(parts[2]) != 32 || len(parts[3]) != 64 {
+		return errors.New("SSClash authentication file has an invalid password hash")
+	}
+	if _, err := hex.DecodeString(parts[2]); err != nil {
+		return errors.New("SSClash authentication file has an invalid password hash")
+	}
+	if _, err := hex.DecodeString(parts[3]); err != nil {
+		return errors.New("SSClash authentication file has an invalid password hash")
+	}
+	return nil
+}
+
+func reconcileManagedProviderDirectory(root, ssclashTemp, directory string) error {
+	path := filepath.Join(root, directory)
+	expectedTarget := filepath.Join(ssclashTemp, directory)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return fmt.Errorf("create runtime directory %s: %w", directory, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect runtime directory %s: %w", directory, err)
+	}
+	if info.IsDir() {
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("runtime path %s is not a directory", directory)
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return fmt.Errorf("read runtime symlink %s: %w", directory, err)
+	}
+	if target != expectedTarget {
+		return fmt.Errorf("runtime path %s has unexpected symlink target %q", directory, target)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove managed runtime symlink %s: %w", directory, err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("recreate runtime directory %s: %w", directory, err)
+	}
+	return nil
 }
 
 func Run(ctx context.Context, config RuntimeConfig) error {
@@ -336,9 +494,10 @@ func childEnvironment() []string {
 	environment := os.Environ()
 	result := environment[:0]
 	for _, entry := range environment {
-		if !strings.HasPrefix(entry, "SUBSCRIPTION_URL=") {
-			result = append(result, entry)
+		if strings.HasPrefix(entry, "SUBSCRIPTION_URL=") || strings.HasPrefix(entry, "SSCLASH_PASSWORD=") {
+			continue
 		}
+		result = append(result, entry)
 	}
 	return result
 }

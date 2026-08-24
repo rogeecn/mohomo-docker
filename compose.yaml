@@ -8,9 +8,12 @@ services:
     init: true
     environment:
       SUBSCRIPTION_URL: ${SUBSCRIPTION_URL:?set SUBSCRIPTION_URL in .env}
+      SSCLASH_PASSWORD: ${SSCLASH_PASSWORD:-}
     ports:
-      - "${PROXY_BIND:-0.0.0.0}:${PROXY_PORT:-7890}:7890/tcp"
-      - "${PROXY_BIND:-0.0.0.0}:${PROXY_PORT:-7890}:7890/udp"
+      # Keep the plaintext Web UI behind a host-local HTTPS reverse proxy.
+      - "127.0.0.1:${WEB_PORT:-9091}:9091/tcp"
+      - "${PROXY_BIND:-127.0.0.1}:${PROXY_PORT:-7890}:7890/tcp"
+      - "${PROXY_BIND:-127.0.0.1}:${PROXY_PORT:-7890}:7890/udp"
     volumes:
       - ssclash-data:/opt/clash
     cap_drop:

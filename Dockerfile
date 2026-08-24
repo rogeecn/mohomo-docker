@@ -77,12 +77,12 @@ COPY config/config.yaml /usr/local/share/ssclash/config.yaml
 ENV SSCLASH_ROOT=/opt/clash \
     SSCLASH_TMP=/tmp/ssclash \
     SSCLASH_PLATFORM=linux \
-    SSCLASH_ADDR=127.0.0.1:9091 \
+    SSCLASH_ADDR=0.0.0.0:9091 \
     SAFE_PATHS=/usr/local/share/ssclash
 
 USER ssclash
 VOLUME ["/opt/clash"]
-EXPOSE 7890/tcp 7890/udp
+EXPOSE 9091/tcp 7890/tcp 7890/udp
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=4 \
     CMD curl --fail --silent --show-error http://127.0.0.1:9090/version >/dev/null
 ENTRYPOINT ["/usr/local/bin/bootstrap"]
