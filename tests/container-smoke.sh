@@ -8,8 +8,6 @@ unconfigured="mohomo-docker-unconfigured-${suffix}"
 provider="mohomo-provider-smoke-${suffix}"
 network="mohomo-network-smoke-${suffix}"
 volume="mohomo-volume-smoke-${suffix}"
-provider_dir=""
-cookie=""
 secret="container-smoke-secret"
 admin_password="container-smoke-admin-password"
 
@@ -22,8 +20,6 @@ cleanup() {
 	docker container rm --force "$container" "$unconfigured" "$provider" >/dev/null 2>&1 || true
 	docker volume rm "$volume" >/dev/null 2>&1 || true
 	docker network rm "$network" >/dev/null 2>&1 || true
-	[ -z "$provider_dir" ] || rm -rf "$provider_dir"
-	[ -z "$cookie" ] || rm -f "$cookie"
 }
 trap cleanup EXIT INT TERM
 
@@ -53,27 +49,34 @@ assert_published_ports() {
 
 assert_web_login() {
 	web_port=$1
-	: > "$cookie"
-	setup_redirect=$(curl --silent --show-error --output /dev/null \
-		--write-out '%{http_code} %{redirect_url}' \
-		"http://127.0.0.1:${web_port}/setup")
-	if [ "$setup_redirect" != "303 http://127.0.0.1:${web_port}/login" ]; then
-		echo "configured Web UI exposed setup: ${setup_redirect}" >&2
-		exit 1
-	fi
-	login_html=$(curl --fail --silent --show-error --cookie-jar "$cookie" \
-		"http://127.0.0.1:${web_port}/login")
-	login_csrf=$(printf '%s' "$login_html" | sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' | head -1)
-	test -n "$login_csrf"
-	curl --fail --silent --show-error \
-		--cookie "$cookie" \
-		--cookie-jar "$cookie" \
-		--request POST \
-		--data-urlencode "csrf=${login_csrf}" \
-		--data-urlencode "password=${admin_password}" \
-		"http://127.0.0.1:${web_port}/login" >/dev/null
-	curl --fail --silent --show-error --cookie "$cookie" \
-		"http://127.0.0.1:${web_port}/config" | grep -F 'csrf-token' >/dev/null
+	docker run --rm --network host \
+		--env "WEB_PORT=${web_port}" \
+		--env "ADMIN_PASSWORD=${admin_password}" \
+		--entrypoint /bin/sh \
+		"$image" -c '
+			set -eu
+			cookie=$(mktemp)
+			setup_redirect=$(curl --silent --show-error --output /dev/null \
+				--write-out "%{http_code} %{redirect_url}" \
+				"http://127.0.0.1:${WEB_PORT}/setup")
+			if [ "$setup_redirect" != "303 http://127.0.0.1:${WEB_PORT}/login" ]; then
+				echo "configured Web UI exposed setup: ${setup_redirect}" >&2
+				exit 1
+			fi
+			login_html=$(curl --fail --silent --show-error --cookie-jar "$cookie" \
+				"http://127.0.0.1:${WEB_PORT}/login")
+			login_csrf=$(printf "%s" "$login_html" | sed -n "s/.*name=\"csrf\" value=\"\([^\"]*\)\".*/\1/p" | head -1)
+			test -n "$login_csrf"
+			curl --fail --silent --show-error \
+				--cookie "$cookie" \
+				--cookie-jar "$cookie" \
+				--request POST \
+				--data-urlencode "csrf=${login_csrf}" \
+				--data-urlencode "password=${ADMIN_PASSWORD}" \
+				"http://127.0.0.1:${WEB_PORT}/login" >/dev/null
+			curl --fail --silent --show-error --cookie "$cookie" \
+				"http://127.0.0.1:${WEB_PORT}/config" | grep -F csrf-token >/dev/null
+		'
 }
 
 default_compose=$(SUBSCRIPTION_URL=https://subscription.example.invalid/mihomo docker compose config)
@@ -101,27 +104,15 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -c '
 	/usr/local/lib/ssclash/clash -t -d "$runtime" -f "$runtime/config.yaml"
 ' >/dev/null
 
-provider_dir=$(mktemp -d)
-printf '%s\n' \
-	'proxies:' \
-	'  - name: smoke-node' \
-	'    type: socks5' \
-	'    server: 127.0.0.1' \
-	'    port: 9' \
-	> "$provider_dir/provider.yaml"
-chmod 0755 "$provider_dir"
-chmod 0644 "$provider_dir/provider.yaml"
-
 docker network create "$network" >/dev/null
 docker volume create "$volume" >/dev/null
 docker run --detach --rm \
 	--name "$provider" \
 	--network "$network" \
-	--volume "$provider_dir:/srv:ro" \
 	--entrypoint /bin/sh \
-	"$image" -c 'while :; do { printf "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\n"; cat /srv/provider.yaml; } | nc -l -p 8080; done' >/dev/null
+	"$image" -c 'while :; do printf "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\nproxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" | nc -l -p 8080; done' >/dev/null
 attempt=0
-until docker exec "$provider" wget -qO- http://127.0.0.1:8080/provider.yaml >/dev/null; do
+until docker exec "$provider" wget -qO- http://127.0.0.1:8080/provider.yaml | grep -F 'name: smoke-node' >/dev/null; do
 	attempt=$((attempt + 1))
 	if [ "$attempt" -ge 10 ]; then
 		echo "subscription fixture did not become ready" >&2
@@ -164,7 +155,6 @@ if docker logs "$unconfigured" 2>&1 | grep -F 'web UI listening' >/dev/null; the
 	exit 1
 fi
 docker container rm "$unconfigured" >/dev/null
-cookie=$(mktemp)
 
 docker run --detach \
 	--name "$container" \

@@ -38,6 +38,9 @@ jobs:
       - name: Run tests
         run: ./scripts/test.sh
 
+      - name: Run container smoke test
+        run: ./tests/container-smoke.sh
+
   build:
     name: Build and publish
     needs: test

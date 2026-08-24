@@ -17,11 +17,12 @@ FROM alpine:${ALPINE_VERSION} AS release-assets
 ARG TARGETARCH
 ARG SSCLASH_VERSION=v6.1.0
 ARG MIHOMO_VERSION=v1.19.30
-ARG MIHOMO_SHA256_AMD64=cf06ce2c7d1421bdbda14ee4a5b6046672dc35ebf8eecd8e77504ec3c0ed9a84
+ARG MIHOMO_SHA256_AMD64=cbe553d0319a414bd3a372c5976a252155b2c4882b66bce88a4d6bba9571a553
 ARG MIHOMO_SHA256_ARM64=58896873736d28628f66de3677c8654fa0f180662523148e136cff4f6e890069
 WORKDIR /assets
 RUN apk add --no-cache ca-certificates curl gzip
-RUN case "${TARGETARCH}" in \
+RUN set -eu; \
+    case "${TARGETARCH}" in \
       amd64|arm64) ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}; supported: amd64, arm64" >&2; exit 1 ;; \
     esac; \
@@ -35,11 +36,11 @@ RUN case "${TARGETARCH}" in \
     test -n "${expected}"; \
     printf '%s  %s\n' "${expected}" ssclash | sha256sum -c -; \
     chmod 0755 ssclash
-RUN case "${TARGETARCH}" in \
-      amd64) mihomo_sha256="${MIHOMO_SHA256_AMD64}" ;; \
-      arm64) mihomo_sha256="${MIHOMO_SHA256_ARM64}" ;; \
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) asset="mihomo-linux-amd64-v1-${MIHOMO_VERSION}.gz"; mihomo_sha256="${MIHOMO_SHA256_AMD64}" ;; \
+      arm64) asset="mihomo-linux-arm64-${MIHOMO_VERSION}.gz"; mihomo_sha256="${MIHOMO_SHA256_ARM64}" ;; \
     esac; \
-    asset="mihomo-linux-${TARGETARCH}-${MIHOMO_VERSION}.gz"; \
     curl --fail --show-error --silent --location --retry 3 \
       --output mihomo.gz \
       "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/${asset}"; \
@@ -51,7 +52,8 @@ FROM alpine:${ALPINE_VERSION} AS acl4ssr-assets
 ARG ACL4SSR_REF=6e27259b8625e360699c014f98f978ee7408c644
 ARG ACL4SSR_SHA256=72229e2f0a38fc9776720a20dd4ecb44fdd0b0704bbf1f5141732562a237bff2
 RUN apk add --no-cache ca-certificates curl
-RUN curl --fail --show-error --silent --location --retry 3 \
+RUN set -eu; \
+    curl --fail --show-error --silent --location --retry 3 \
       --output /tmp/acl4ssr.tar.gz \
       "https://github.com/ACL4SSR/ACL4SSR/archive/${ACL4SSR_REF}.tar.gz"; \
     printf '%s  %s\n' "${ACL4SSR_SHA256}" /tmp/acl4ssr.tar.gz | sha256sum -c -; \
