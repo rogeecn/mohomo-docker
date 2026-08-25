@@ -8,29 +8,31 @@ unconfigured="mohomo-docker-unconfigured-${suffix}"
 legacy_container="mohomo-docker-legacy-${suffix}"
 provider="mohomo-provider-smoke-${suffix}"
 network="mohomo-network-smoke-${suffix}"
+legacy_network="mohomo-legacy-network-smoke-${suffix}"
 volume="mohomo-volume-smoke-${suffix}"
 legacy_volume="mohomo-legacy-volume-smoke-${suffix}"
 secret="container-smoke-secret"
 admin_password="container-smoke-admin-password"
 
-case "$container:$unconfigured:$legacy_container:$provider:$network:$volume:$legacy_volume" in
-mohomo-docker-smoke-*':mohomo-docker-unconfigured-'*':mohomo-docker-legacy-'*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-volume-smoke-'*':mohomo-legacy-volume-smoke-'*) ;;
+case "$container:$unconfigured:$legacy_container:$provider:$network:$legacy_network:$volume:$legacy_volume" in
+mohomo-docker-smoke-*':mohomo-docker-unconfigured-'*':mohomo-docker-legacy-'*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-legacy-network-smoke-'*':mohomo-volume-smoke-'*':mohomo-legacy-volume-smoke-'*) ;;
 *) echo "refusing unsafe cleanup targets" >&2; exit 1 ;;
 esac
 
 cleanup() {
 	docker container rm --force "$container" "$unconfigured" "$legacy_container" "$provider" >/dev/null 2>&1 || true
 	docker volume rm "$volume" "$legacy_volume" >/dev/null 2>&1 || true
-	docker network rm "$network" >/dev/null 2>&1 || true
+	docker network rm "$network" "$legacy_network" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
 
 wait_for_health() {
+	health_container=${1:-$container}
 	attempt=0
-	until [ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy ]; do
+	until [ "$(docker inspect --format '{{.State.Health.Status}}' "$health_container")" = healthy ]; do
 		attempt=$((attempt + 1))
 		if [ "$attempt" -ge 30 ]; then
-			docker logs "$container" >&2
+			docker logs "$health_container" >&2
 			echo "container did not become healthy" >&2
 			exit 1
 		fi
@@ -116,6 +118,24 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -c '
 	/usr/local/lib/ssclash/clash -t -d "$runtime" -f "$runtime/config.yaml"
 ' >/dev/null
 
+docker network create "$network" >/dev/null
+docker network create --internal "$legacy_network" >/dev/null
+docker run --detach --rm \
+	--name "$provider" \
+	--network "$network" \
+	--entrypoint /bin/sh \
+	"$image" -c 'while :; do printf "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\nproxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" | nc -l -p 8080; done' >/dev/null
+docker network connect "$legacy_network" "$provider"
+attempt=0
+until docker exec "$provider" wget -qO- http://127.0.0.1:8080/provider.yaml | grep -F 'name: smoke-node' >/dev/null; do
+	attempt=$((attempt + 1))
+	if [ "$attempt" -ge 10 ]; then
+		echo "subscription fixture did not become ready" >&2
+		exit 1
+	fi
+	sleep 1
+done
+
 docker volume create "$legacy_volume" >/dev/null
 docker run --rm \
 	--volume "$legacy_volume:/opt/clash" \
@@ -128,50 +148,28 @@ docker run --rm \
 			> /opt/clash/config.yaml
 		grep -F "  - GEOIP,CN,🎯 全球直连" /opt/clash/config.yaml >/dev/null
 	'
-if docker run \
+docker run --detach \
 	--name "$legacy_container" \
-	--network none \
-	--env "SUBSCRIPTION_URL=http://127.0.0.1:9/provider.yaml" \
+	--network "$legacy_network" \
+	--env "SUBSCRIPTION_URL=http://${provider}:8080/provider.yaml" \
 	--env "SSCLASH_PASSWORD=${admin_password}" \
 	--volume "$legacy_volume:/opt/clash" \
-	"$image" >/dev/null 2>&1; then
-	echo "legacy volume unexpectedly started without a subscription network" >&2
-	exit 1
-fi
-docker logs "$legacy_container" 2>&1 | grep -F 'initial subscription update failed: subscription request failed' >/dev/null
+	"$image" >/dev/null
+wait_for_health "$legacy_container"
+docker logs "$legacy_container" 2>&1 | grep -F 'bootstrap: SSClash started' >/dev/null
 if docker logs "$legacy_container" 2>&1 | grep -F 'geoip.metadb' >/dev/null; then
 	echo "legacy managed config attempted a GeoIP download" >&2
 	exit 1
 fi
-docker run --rm --network none \
-	--volume "$legacy_volume:/opt/clash" \
-	--entrypoint /bin/sh \
-	"$image" -c '
+docker exec "$legacy_container" /bin/sh -c '
 		set -eu
 		cmp /opt/clash/config.yaml /usr/local/share/ssclash/config.yaml
 		test "$(cat /opt/clash/.mohomo-docker-config-version)" = 1
-		runtime=$(mktemp -d)
-		cp /opt/clash/config.yaml "$runtime/config.yaml"
-		printf "proxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" > "$runtime/subscription.yaml"
-		/usr/local/lib/ssclash/clash -t -d "$runtime" -f "$runtime/config.yaml"
+		grep -F "name: smoke-node" /dev/shm/mohomo/subscription.yaml >/dev/null
+		/usr/local/lib/ssclash/clash -t -d /dev/shm/mohomo -f /dev/shm/mohomo/config.yaml
 	' >/dev/null
-
-docker network create "$network" >/dev/null
+docker container rm --force "$legacy_container" >/dev/null
 docker volume create "$volume" >/dev/null
-docker run --detach --rm \
-	--name "$provider" \
-	--network "$network" \
-	--entrypoint /bin/sh \
-	"$image" -c 'while :; do printf "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\nproxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" | nc -l -p 8080; done' >/dev/null
-attempt=0
-until docker exec "$provider" wget -qO- http://127.0.0.1:8080/provider.yaml | grep -F 'name: smoke-node' >/dev/null; do
-	attempt=$((attempt + 1))
-	if [ "$attempt" -ge 10 ]; then
-		echo "subscription fixture did not become ready" >&2
-		exit 1
-	fi
-	sleep 1
-done
 
 docker run --detach \
 	--name "$unconfigured" \
@@ -289,4 +287,4 @@ assert_published_ports
 web_port=$(docker port "$container" 9091/tcp | awk -F: 'NR == 1 { print $NF }')
 assert_web_login_and_start "$web_port"
 
-echo "container smoke test passed: legacy config migrates offline; fresh volume fails closed; authenticated 9091 survives same-volume rebuild; only 7890/9091 are published"
+echo "container smoke test passed: legacy config migrates and validates a synthetic subscription offline; fresh volume fails closed; authenticated 9091 survives same-volume rebuild; only 7890/9091 are published"

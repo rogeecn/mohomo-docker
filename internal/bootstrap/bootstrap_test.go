@@ -120,6 +120,45 @@ func TestPrepareMigratesExactLegacyManagedConfig(t *testing.T) {
 	assertFileContent(t, filepath.Join(root, managedConfigVersionFile), managedConfigVersion+"\n")
 }
 
+func TestPrepareBackfillsVersionAfterMigrationMarkerFailure(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "data")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := "rule-providers:\n" + managedChinaIPProvider + "rules:\n" + managedChinaIPRule + "\n"
+	legacy := "rule-providers:\nrules:\n" + legacyChinaIPRule + "\n"
+	target := writeFixture(t, root, "config.yaml", legacy)
+	configSource := writeFixture(t, tempDir, "current.yaml", current)
+
+	_, migrated, err := prepareManagedConfig(
+		configSource,
+		target,
+		filepath.Join(tempDir, "missing", managedConfigVersionFile),
+	)
+	if err == nil || !migrated {
+		t.Fatalf("prepareManagedConfig() = migrated %t, error %v; want migrated config and marker write error", migrated, err)
+	}
+	assertFileContent(t, target, current)
+
+	result, err := Prepare(Config{
+		Root:         root,
+		SSClashTemp:  filepath.Join(tempDir, "tmp"),
+		CoreSource:   writeFixture(t, tempDir, "mihomo", "core"),
+		ConfigSource: configSource,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() retry error = %v", err)
+	}
+	if result.ConfigInitialized || result.ConfigMigrated {
+		t.Fatalf("Prepare() retry result = %+v, want marker-only recovery", result)
+	}
+	assertFileContent(t, target, current)
+	assertFileContent(t, filepath.Join(root, managedConfigVersionFile), managedConfigVersion+"\n")
+}
+
 func TestPreparePreservesAndRejectsCustomLegacyGeoIPConfig(t *testing.T) {
 	t.Parallel()
 
