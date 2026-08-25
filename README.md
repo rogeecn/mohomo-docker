@@ -12,7 +12,7 @@ docker compose up -d --build
 docker compose logs -f ssclash
 ```
 
-The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. A fresh volume refuses to start without an `SSCLASH_PASSWORD` of at least 12 characters; bootstrap uses SSClash's own `setpass` command before the Web listener starts. On the Docker host, open `http://127.0.0.1:9091` and log in with that password. A valid existing authentication file is preserved, so later starts do not require or replace the password. Local proxy clients connect to either endpoint:
+The subscription endpoint must return a Clash/Mihomo proxy-provider YAML document (`proxies:`). Use an HTTPS endpoint when its URL contains a credential. A fresh volume refuses to start without an `SSCLASH_PASSWORD` of at least 12 characters; bootstrap uses SSClash's own `setpass` command before the Web listener starts. On the Docker host, open `http://127.0.0.1:9091`, log in with that password, and press **Start**. SSClash then owns the Mihomo process and the Web UI Start/Stop/status controls stay authoritative. A valid existing authentication file is preserved, so later starts do not require or replace the password. Local proxy clients connect to either endpoint:
 
 ```text
 HTTP proxy:   http://127.0.0.1:7890
@@ -33,9 +33,9 @@ Replace the domain and ensure its DNS reaches the host; Caddy then obtains and s
 
 ## Update and secret handling
 
-The bootstrap fetches the subscription once before startup and every hour thereafter. Each candidate is limited to 16 MiB and validated with the packaged Mihomo binary before an atomic replacement and hot reload. A failed reload restores and reloads the previous provider; if that recovery cannot be confirmed, both services stop instead of running with uncertain state.
+The bootstrap fetches the subscription once before startup and every hour thereafter. Each candidate is limited to 16 MiB and validated with the active Mihomo binary before an atomic replacement. When Mihomo is running, bootstrap hot-reloads it; when it is stopped, the next Web-managed Start reads the latest provider. A failed reload restores and reloads the previous provider; if that recovery cannot be confirmed, SSClash stops instead of leaving Mihomo in an uncertain state.
 
-The subscription URL and bootstrap administrator password are removed from child-process environments and never printed. The password is persisted only as SSClash's PBKDF2 authentication file. Before opening the Web listener, bootstrap requires that file to be a readable, process-owned regular file with exact mode `0600` and SSClash v6.1.0's expected PBKDF2 format; a missing or abnormal file fails closed. The generated configuration contains only a local provider path. Subscription data lives under `/dev/shm/mohomo`, so neither the image nor the `/opt/clash` volume stores its URL, response, or node credentials. Container restarts intentionally fetch a fresh subscription instead of persisting credentials.
+The subscription URL and bootstrap administrator password are removed from child-process environments and never printed. The password is persisted only as SSClash's PBKDF2 authentication file. Before opening the Web listener, bootstrap requires that file to be a readable, process-owned regular file with exact mode `0600` and SSClash v6.1.0's expected PBKDF2 format; a missing or abnormal file fails closed. The generated configuration contains only a local provider path. Subscription data lives under `/dev/shm/mohomo`; `/opt/clash/subscription.yaml` is only a managed link to that in-memory file, so neither the image nor the volume stores its URL, response, or node credentials. Container restarts intentionally fetch a fresh subscription instead of persisting credentials.
 
 Do not commit `.env`; it is ignored by Git. Docker still exposes bootstrap environment variables to principals allowed to inspect the container, so restrict Docker daemon access.
 
@@ -47,7 +47,7 @@ The generated groups and rule order mirror `ACL4SSR_Online_Full_MultiMode.ini`: 
 
 ## Persistent data
 
-`/opt/clash` stores only SSClash settings, the packaged Mihomo core, and the non-secret generated configuration. Bootstrap creates missing files, preserves existing regular non-empty files, enforces `OPERATING_MODE=server` and `PROXY_MODE=none`, and rejects corrupt or ambiguous persistent state. On container replacement it repairs only SSClash's exact `rule-providers` and `proxy-providers` links into `SSCLASH_TMP`; unexpected links are rejected without deleting their targets.
+`/opt/clash` stores only SSClash settings, the packaged Mihomo core, and the non-secret generated configuration. Bootstrap creates missing files, preserves existing regular non-empty files, enforces `OPERATING_MODE=server` and `PROXY_MODE=none`, and rejects corrupt or ambiguous persistent state. It atomically migrates only the exact legacy packaged `GEOIP,CN` configuration to version 1's local `ChinaIp` rule and records `.mohomo-docker-config-version`; a customized legacy `GEOIP,CN` configuration is preserved and startup fails with an explicit remediation message. On container replacement it repairs only SSClash's exact `rule-providers` and `proxy-providers` links into `SSCLASH_TMP`; unexpected links are rejected without deleting their targets.
 
 ## Reproducible inputs
 
@@ -66,7 +66,7 @@ The GitHub Actions workflow builds `linux/amd64`, runs tests first, publishes on
 ./tests/container-smoke.sh
 ```
 
-The unit suite checks strict fail-closed authentication-file validation, provider-link recovery, atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test verifies loopback-only Compose defaults and proxy-only public opt-in, proves 7890/9091 are unreachable through a non-loopback host address, checks fresh-volume authentication and credential isolation, and repeats health and login checks after recreating the container with the same volume.
+The unit suite checks strict fail-closed authentication-file validation, managed-config migration, provider-link recovery, atomic rollback, URL redaction, server-only listeners, local ACL4SSR providers, and at least 65% bootstrap coverage. The container smoke test validates a legacy volume with networking disabled, verifies loopback-only Compose defaults and proxy-only public opt-in, proves 7890/9091 are unreachable through a non-loopback host address, checks fresh-volume authentication and credential isolation, and repeats health and login checks after recreating the container with the same volume.
 
 ## License boundary
 

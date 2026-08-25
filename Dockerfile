@@ -86,5 +86,5 @@ USER ssclash
 VOLUME ["/opt/clash"]
 EXPOSE 9091/tcp 7890/tcp 7890/udp
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=4 \
-    CMD curl --fail --silent --show-error http://127.0.0.1:9090/version >/dev/null
+	CMD curl --fail --silent --show-error http://127.0.0.1:9091/login >/dev/null
 ENTRYPOINT ["/usr/local/bin/bootstrap"]

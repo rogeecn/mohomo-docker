@@ -92,6 +92,61 @@ func TestPreparePreservesUserDataAndForcesServerMode(t *testing.T) {
 	assertFileContent(t, filepath.Join(root, ".ssclash", "settings"), "LOG_LEVEL=debug\nOPERATING_MODE=server\nPROXY_MODE=none\n")
 }
 
+func TestPrepareMigratesExactLegacyManagedConfig(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "data")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := "rule-providers:\n" + managedChinaIPProvider + "rules:\n" + managedChinaIPRule + "\n"
+	legacy := "rule-providers:\nrules:\n" + legacyChinaIPRule + "\n"
+	writeFixture(t, root, "config.yaml", legacy)
+
+	result, err := Prepare(Config{
+		Root:         root,
+		SSClashTemp:  filepath.Join(tempDir, "tmp"),
+		CoreSource:   writeFixture(t, tempDir, "mihomo", "core"),
+		ConfigSource: writeFixture(t, tempDir, "current.yaml", current),
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if result.ConfigInitialized || !result.ConfigMigrated {
+		t.Fatalf("Prepare() result = %+v, want migrated existing config", result)
+	}
+	assertFileContent(t, filepath.Join(root, "config.yaml"), current)
+	assertFileContent(t, filepath.Join(root, managedConfigVersionFile), managedConfigVersion+"\n")
+}
+
+func TestPreparePreservesAndRejectsCustomLegacyGeoIPConfig(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "data")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := "rule-providers:\n" + managedChinaIPProvider + "rules:\n" + managedChinaIPRule + "\n"
+	custom := "rule-providers:\nrules:\n" + legacyChinaIPRule + "\n# user managed\n"
+	target := writeFixture(t, root, "config.yaml", custom)
+
+	_, err := Prepare(Config{
+		Root:         root,
+		SSClashTemp:  filepath.Join(tempDir, "tmp"),
+		CoreSource:   writeFixture(t, tempDir, "mihomo", "core"),
+		ConfigSource: writeFixture(t, tempDir, "current.yaml", current),
+	})
+	if err == nil || !strings.Contains(err.Error(), "custom config uses GEOIP,CN") {
+		t.Fatalf("Prepare() error = %v, want explicit custom config migration error", err)
+	}
+	assertFileContent(t, target, custom)
+	if _, statErr := os.Stat(filepath.Join(root, managedConfigVersionFile)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("managed config version marker unexpectedly created: %v", statErr)
+	}
+}
+
 func TestEnsureAdminPasswordFailsClosedOnFreshVolume(t *testing.T) {
 	t.Parallel()
 
@@ -479,47 +534,121 @@ func TestUpdateAndReloadRestoresRuntimeAfterAmbiguousFailure(t *testing.T) {
 	}
 }
 
-func TestRunStopsServicesWhenRollbackReloadFails(t *testing.T) {
+func TestRunLeavesMihomoLifecycleToSSClash(t *testing.T) {
 	tempDir := t.TempDir()
-	binary := writeFixture(t, tempDir, "fake-service", "#!/bin/sh\nif [ \"$1\" = -t ]; then exit 0; fi\nexec sleep 3600\n")
-	if err := os.Chmod(binary, 0o755); err != nil {
+	root := filepath.Join(tempDir, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	config := writeFixture(t, tempDir, "config.yaml", "proxy-providers:\n  subscription:\n    type: file\n    path: ./subscription.yaml\n")
-	var requests atomic.Int32
+	coreMarker := filepath.Join(tempDir, "core-started")
+	ssclashMarker := filepath.Join(tempDir, "ssclash-started")
+	t.Setenv("MIHOMO_TEST_MARKER", coreMarker)
+	t.Setenv("SSCLASH_TEST_MARKER", ssclashMarker)
+	core := writeFixture(t, tempDir, "fake-core", "#!/bin/sh\nif [ \"$1\" = -t ]; then exit 0; fi\ntouch \"$MIHOMO_TEST_MARKER\"\nexit 1\n")
+	ssclash := writeFixture(t, tempDir, "fake-ssclash", "#!/bin/sh\n[ \"$1\" = serve ]\ntouch \"$SSCLASH_TEST_MARKER\"\nsleep 1\n")
+	for _, binary := range []string{core, ssclash} {
+		if err := os.Chmod(binary, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := writeFixture(t, root, "config.yaml", "proxy-providers:\n  subscription:\n    type: file\n    path: ./subscription.yaml\n")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("proxies:\n  - name: initial\n"))
+	}))
+	defer server.Close()
+
+	runtimeDir := filepath.Join(tempDir, "runtime")
+	err := Run(context.Background(), RuntimeConfig{
+		Root:            root,
+		CoreBinary:      core,
+		SSClashBinary:   ssclash,
+		ConfigSource:    config,
+		RuntimeDir:      runtimeDir,
+		SubscriptionURL: server.URL,
+		UpdateInterval:  time.Hour,
+	})
+	if err == nil || !strings.Contains(err.Error(), "SSClash exited") {
+		t.Fatalf("Run() error = %v, want SSClash exit", err)
+	}
+	if _, err := os.Stat(ssclashMarker); err != nil {
+		t.Fatalf("SSClash was not started: %v", err)
+	}
+	if _, err := os.Stat(coreMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap started Mihomo outside SSClash: %v", err)
+	}
+	linkTarget, err := os.Readlink(filepath.Join(root, "subscription.yaml"))
+	if err != nil {
+		t.Fatalf("read subscription link: %v", err)
+	}
+	if want := filepath.Join(runtimeDir, "subscription.yaml"); linkTarget != want {
+		t.Fatalf("subscription link = %q, want %q", linkTarget, want)
+	}
+}
+
+func TestRunStopsSSClashWhenControllerCannotConfirmRollback(t *testing.T) {
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	core := writeFixture(t, tempDir, "fake-core", "#!/bin/sh\n[ \"$1\" = -t ]\n")
+	ssclash := writeFixture(t, tempDir, "fake-ssclash", "#!/bin/sh\n[ \"$1\" = serve ]\nexec sleep 3600\n")
+	for _, binary := range []string{core, ssclash} {
+		if err := os.Chmod(binary, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := writeFixture(t, root, "config.yaml", "proxy-providers:\n  subscription:\n    type: file\n    path: ./subscription.yaml\n")
+
+	var subscriptionRequests atomic.Int32
+	subscription := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		name := "updated"
-		if requests.Add(1) == 1 {
+		if subscriptionRequests.Add(1) == 1 {
 			name = "initial"
 		}
 		_, _ = writer.Write([]byte("proxies:\n  - name: " + name + "\n"))
 	}))
-	defer server.Close()
+	defer subscription.Close()
+	var reloadRequests atomic.Int32
+	controller := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/version":
+			writer.WriteHeader(http.StatusOK)
+		case request.Method == http.MethodPut && request.URL.Path == "/providers/proxies/subscription":
+			reloadRequests.Add(1)
+			http.Error(writer, "reload failed", http.StatusInternalServerError)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer controller.Close()
 
 	runResult := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
 		runResult <- Run(ctx, RuntimeConfig{
-			CoreBinary:      binary,
-			SSClashBinary:   binary,
+			Root:            root,
+			CoreBinary:      core,
+			SSClashBinary:   ssclash,
 			ConfigSource:    config,
 			RuntimeDir:      filepath.Join(tempDir, "runtime"),
-			SubscriptionURL: server.URL,
+			SubscriptionURL: subscription.URL,
+			ControllerURL:   controller.URL,
 			UpdateInterval:  20 * time.Millisecond,
 		})
 	}()
-	var err error
+
 	select {
-	case err = <-runResult:
+	case err := <-runResult:
+		if !errors.Is(err, errMihomoStateUncertain) {
+			t.Fatalf("Run() error = %v, want uncertain Mihomo state", err)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run() did not reach rollback failure")
+		t.Fatal("Run() did not stop SSClash after rollback reload failure")
 	}
-	if !errors.Is(err, errMihomoStateUncertain) {
-		t.Fatalf("Run() error = %v, want uncertain Mihomo state", err)
-	}
-	if requests.Load() < 2 {
-		t.Fatalf("subscription requests = %d, want initial fetch and timed update", requests.Load())
+	if subscriptionRequests.Load() < 2 || reloadRequests.Load() != 2 {
+		t.Fatalf("requests = subscription:%d reload:%d, want at least 2 and exactly 2", subscriptionRequests.Load(), reloadRequests.Load())
 	}
 	assertFileContent(t, filepath.Join(tempDir, "runtime", "subscription.yaml"), "proxies:\n  - name: initial\n")
 }

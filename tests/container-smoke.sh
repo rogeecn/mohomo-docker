@@ -5,20 +5,22 @@ image=${1:-mohomo-docker:smoke}
 suffix="$$"
 container="mohomo-docker-smoke-${suffix}"
 unconfigured="mohomo-docker-unconfigured-${suffix}"
+legacy_container="mohomo-docker-legacy-${suffix}"
 provider="mohomo-provider-smoke-${suffix}"
 network="mohomo-network-smoke-${suffix}"
 volume="mohomo-volume-smoke-${suffix}"
+legacy_volume="mohomo-legacy-volume-smoke-${suffix}"
 secret="container-smoke-secret"
 admin_password="container-smoke-admin-password"
 
-case "$container:$unconfigured:$provider:$network:$volume" in
-mohomo-docker-smoke-*':mohomo-docker-unconfigured-'*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-volume-smoke-'*) ;;
+case "$container:$unconfigured:$legacy_container:$provider:$network:$volume:$legacy_volume" in
+mohomo-docker-smoke-*':mohomo-docker-unconfigured-'*':mohomo-docker-legacy-'*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-volume-smoke-'*':mohomo-legacy-volume-smoke-'*) ;;
 *) echo "refusing unsafe cleanup targets" >&2; exit 1 ;;
 esac
 
 cleanup() {
-	docker container rm --force "$container" "$unconfigured" "$provider" >/dev/null 2>&1 || true
-	docker volume rm "$volume" >/dev/null 2>&1 || true
+	docker container rm --force "$container" "$unconfigured" "$legacy_container" "$provider" >/dev/null 2>&1 || true
+	docker volume rm "$volume" "$legacy_volume" >/dev/null 2>&1 || true
 	docker network rm "$network" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
@@ -47,7 +49,7 @@ assert_published_ports() {
 	fi
 }
 
-assert_web_login() {
+assert_web_login_and_start() {
 	web_port=$1
 	docker run --rm --network host \
 		--env "WEB_PORT=${web_port}" \
@@ -74,8 +76,18 @@ assert_web_login() {
 				--data-urlencode "csrf=${login_csrf}" \
 				--data-urlencode "password=${ADMIN_PASSWORD}" \
 				"http://127.0.0.1:${WEB_PORT}/login" >/dev/null
+			config_html=$(curl --fail --silent --show-error --cookie "$cookie" \
+				"http://127.0.0.1:${WEB_PORT}/config")
+			api_csrf=$(printf "%s" "$config_html" | sed -n "s/.*name=\"csrf-token\" content=\"\([^\"]*\)\".*/\1/p" | head -1)
+			test -n "$api_csrf"
+			curl --fail --silent --show-error \
+				--cookie "$cookie" \
+				--header "X-CSRF-Token: ${api_csrf}" \
+				--header "Content-Type: application/json" \
+				--data "{\"action\":\"start\"}" \
+				"http://127.0.0.1:${WEB_PORT}/api/service" | grep -F "\"ok\":true" >/dev/null
 			curl --fail --silent --show-error --cookie "$cookie" \
-				"http://127.0.0.1:${WEB_PORT}/config" | grep -F csrf-token >/dev/null
+				"http://127.0.0.1:${WEB_PORT}/api/status" | grep -F "\"running\":true" >/dev/null
 		'
 }
 
@@ -103,6 +115,46 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -c '
 	printf "proxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" > "$runtime/subscription.yaml"
 	/usr/local/lib/ssclash/clash -t -d "$runtime" -f "$runtime/config.yaml"
 ' >/dev/null
+
+docker volume create "$legacy_volume" >/dev/null
+docker run --rm \
+	--volume "$legacy_volume:/opt/clash" \
+	--entrypoint /bin/sh \
+	"$image" -c '
+		set -eu
+		grep -v -F "  ChinaIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaIp.yaml}" \
+			/usr/local/share/ssclash/config.yaml \
+			| sed "s/^  - RULE-SET,ChinaIp,/  - GEOIP,CN,/" \
+			> /opt/clash/config.yaml
+		grep -F "  - GEOIP,CN,🎯 全球直连" /opt/clash/config.yaml >/dev/null
+	'
+if docker run \
+	--name "$legacy_container" \
+	--network none \
+	--env "SUBSCRIPTION_URL=http://127.0.0.1:9/provider.yaml" \
+	--env "SSCLASH_PASSWORD=${admin_password}" \
+	--volume "$legacy_volume:/opt/clash" \
+	"$image" >/dev/null 2>&1; then
+	echo "legacy volume unexpectedly started without a subscription network" >&2
+	exit 1
+fi
+docker logs "$legacy_container" 2>&1 | grep -F 'initial subscription update failed: subscription request failed' >/dev/null
+if docker logs "$legacy_container" 2>&1 | grep -F 'geoip.metadb' >/dev/null; then
+	echo "legacy managed config attempted a GeoIP download" >&2
+	exit 1
+fi
+docker run --rm --network none \
+	--volume "$legacy_volume:/opt/clash" \
+	--entrypoint /bin/sh \
+	"$image" -c '
+		set -eu
+		cmp /opt/clash/config.yaml /usr/local/share/ssclash/config.yaml
+		test "$(cat /opt/clash/.mohomo-docker-config-version)" = 1
+		runtime=$(mktemp -d)
+		cp /opt/clash/config.yaml "$runtime/config.yaml"
+		printf "proxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" > "$runtime/subscription.yaml"
+		/usr/local/lib/ssclash/clash -t -d "$runtime" -f "$runtime/config.yaml"
+	' >/dev/null
 
 docker network create "$network" >/dev/null
 docker volume create "$volume" >/dev/null
@@ -172,7 +224,7 @@ docker run --detach \
 wait_for_health
 assert_published_ports
 web_port=$(docker port "$container" 9091/tcp | awk -F: 'NR == 1 { print $NF }')
-assert_web_login "$web_port"
+assert_web_login_and_start "$web_port"
 
 host_gateway=$(docker network inspect "$network" --format '{{(index .IPAM.Config 0).Gateway}}')
 container_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container")
@@ -235,6 +287,6 @@ docker run --detach \
 wait_for_health
 assert_published_ports
 web_port=$(docker port "$container" 9091/tcp | awk -F: 'NR == 1 { print $NF }')
-assert_web_login "$web_port"
+assert_web_login_and_start "$web_port"
 
-echo "container smoke test passed: fresh volume fails closed; authenticated 9091 survives same-volume rebuild; only 7890/9091 are published"
+echo "container smoke test passed: legacy config migrates offline; fresh volume fails closed; authenticated 9091 survives same-volume rebuild; only 7890/9091 are published"

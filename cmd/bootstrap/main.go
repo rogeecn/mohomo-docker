@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -40,10 +41,11 @@ func main() {
 		log.Fatalf("bootstrap: admin authentication setup failed: %v", err)
 	}
 	log.Printf(
-		"bootstrap: ready root=%s core_initialized=%t config_initialized=%t server_settings_changed=%t admin_password_initialized=%t",
+		"bootstrap: ready root=%s core_initialized=%t config_initialized=%t config_migrated=%t server_settings_changed=%t admin_password_initialized=%t",
 		root,
 		result.CoreInitialized,
 		result.ConfigInitialized,
+		result.ConfigMigrated,
 		result.ServerSettingsChanged,
 		adminPasswordInitialized,
 	)
@@ -56,9 +58,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = bootstrap.Run(ctx, bootstrap.RuntimeConfig{
-		CoreBinary:      defaultCoreSource,
+		Root:            root,
+		CoreBinary:      filepath.Join(root, "bin", "clash"),
 		SSClashBinary:   ssclashBinary,
-		ConfigSource:    defaultConfigSource,
+		ConfigSource:    filepath.Join(root, "config.yaml"),
 		RuntimeDir:      defaultRuntimeDir,
 		SubscriptionURL: subscriptionURL,
 		UpdateInterval:  time.Hour,
