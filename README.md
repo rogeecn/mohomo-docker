@@ -44,14 +44,14 @@ docker compose ps
 
 On a fresh volume, bootstrap downloads, normalizes, generates, and validates a candidate with the packaged Mihomo binary before starting Mihomo. This is the cold-start update; a failure exits nonzero without starting an empty configuration.
 
-On restart, bootstrap validates and starts the cached `last-good` slot, waits for the controller, and then immediately attempts an update. Later updates run hourly from container start. Each candidate is written to the inactive generation, validated, and atomically selected before Mihomo reloads it through the native `PUT /configs` API.
+On restart, bootstrap validates and starts the cached `last-good` slot, waits for the controller, and then immediately attempts an update. After startup processing finishes—including the cold-start update on a fresh volume or the immediate update on a restart—the hourly timer starts. The first scheduled update therefore runs one hour after that processing completes. Each candidate is written to the inactive generation, validated, and atomically selected before Mihomo reloads it through the native `PUT /configs` API.
 
 Download, HTTP, YAML, generation, or Mihomo validation failures reject the candidate and keep the running `last-good`. A reload failure restores the prior pointer and reloads the prior configuration. A storage failure, or failure to persist/reload that rollback, stops Mihomo instead of claiming an unsafe recovery; Compose's restart policy then retries startup from whatever valid `last-good` remains.
 
 Trigger the same update path immediately for tests or operations:
 
 ```sh
-docker kill --signal HUP mohomo-docker
+docker compose kill --signal HUP mihomo
 ```
 
 The `bootstrap candidate` subcommand remains available for an isolated one-shot candidate pipeline check; a running service should use `SIGHUP` so the result is hot-reloaded.
