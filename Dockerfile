@@ -7,7 +7,8 @@ FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS bootstrap-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

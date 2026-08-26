@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -67,5 +69,32 @@ func TestSeededConfigUsesLocalACL4SSRRulesAndMemorySubscription(t *testing.T) {
 	}
 	if strings.Contains(config, "raw.githubusercontent.com") || strings.Contains(config, "type: http") || strings.Contains(config, "GEOIP,CN,") {
 		t.Error("seeded config depends on an online rule or subscription provider")
+	}
+}
+
+func TestMihomoTemplateAndRuntimeAssetsArePinned(t *testing.T) {
+	t.Parallel()
+
+	template, err := os.ReadFile("../../config/config.yaml")
+	if err != nil {
+		t.Fatalf("read seeded config: %v", err)
+	}
+	if got, want := fmt.Sprintf("%x", sha256.Sum256(template)), "ba556936c447692164e6d7eabec13c1a83ace8014b723b4b20d6e3648ae49d54"; got != want {
+		t.Fatalf("seeded config SHA-256 = %s, want pinned %s", got, want)
+	}
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	for _, pin := range []string{
+		"MIHOMO_VERSION=v1.19.30",
+		"MIHOMO_SHA256_AMD64=cbe553d0319a414bd3a372c5976a252155b2c4882b66bce88a4d6bba9571a553",
+		"MIHOMO_SHA256_ARM64=58896873736d28628f66de3677c8654fa0f180662523148e136cff4f6e890069",
+		"ACL4SSR_REF=6e27259b8625e360699c014f98f978ee7408c644",
+		"ACL4SSR_SHA256=72229e2f0a38fc9776720a20dd4ecb44fdd0b0704bbf1f5141732562a237bff2",
+	} {
+		if !strings.Contains(string(dockerfile), pin) {
+			t.Errorf("Dockerfile is missing pinned asset %q", pin)
+		}
 	}
 }

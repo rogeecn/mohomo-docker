@@ -20,10 +20,29 @@ const (
 	defaultConfigSource = "/usr/local/share/ssclash/config.yaml"
 	ssclashBinary       = "/usr/local/bin/ssclash"
 	defaultRuntimeDir   = "/dev/shm/mohomo"
+	defaultSecretPath   = "/run/secrets/subscription"
+	defaultDataDir      = "/data"
 )
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
+	if len(os.Args) == 2 && os.Args[1] == "candidate" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := bootstrap.PublishCandidate(ctx, bootstrap.CandidateConfig{
+			SecretPath:   defaultSecretPath,
+			DataDir:      defaultDataDir,
+			TemplatePath: defaultConfigSource,
+			MihomoBinary: defaultCoreSource,
+		}); err != nil {
+			log.Fatalf("bootstrap: candidate update failed: %v", err)
+		}
+		log.Print("bootstrap: candidate configuration published")
+		return
+	}
+	if len(os.Args) != 1 {
+		log.Fatal("bootstrap: usage: bootstrap [candidate]")
+	}
 	root := envOrDefault("SSCLASH_ROOT", defaultRoot)
 	log.Printf("bootstrap: preparing persistent runtime root=%s", root)
 
