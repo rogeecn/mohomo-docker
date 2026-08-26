@@ -8,17 +8,18 @@ provider="mohomo-provider-${suffix}"
 network="mohomo-network-${suffix}"
 volume="mohomo-data-${suffix}"
 cold_volume="mohomo-cold-${suffix}"
+secret_volume="mohomo-secret-${suffix}"
 secret_file=$(mktemp "${TMPDIR:-/tmp}/mohomo-secret.XXXXXX")
 secret="fake-container-token"
 
-case "$container:$provider:$network:$volume:$cold_volume" in
-mohomo-smoke-*':mohomo-provider-'*':mohomo-network-'*':mohomo-data-'*':mohomo-cold-'*) ;;
+case "$container:$provider:$network:$volume:$cold_volume:$secret_volume" in
+mohomo-smoke-*':mohomo-provider-'*':mohomo-network-'*':mohomo-data-'*':mohomo-cold-'*':mohomo-secret-'*) ;;
 *) echo "refusing unsafe cleanup targets" >&2; exit 1 ;;
 esac
 
 cleanup() {
 	docker container rm --force "$container" "$provider" >/dev/null 2>&1 || true
-	docker volume rm "$volume" "$cold_volume" >/dev/null 2>&1 || true
+	docker volume rm "$volume" "$cold_volume" "$secret_volume" >/dev/null 2>&1 || true
 	docker network rm "$network" >/dev/null 2>&1 || true
 	rm -f "$secret_file"
 }
@@ -79,6 +80,14 @@ docker build --tag "$image" .
 docker network create "$network" >/dev/null
 docker volume create "$volume" >/dev/null
 docker volume create "$cold_volume" >/dev/null
+docker volume create "$secret_volume" >/dev/null
+docker run --rm \
+	--user 0:0 \
+	--env "PROVIDER=$provider" \
+	--env "SECRET=$secret" \
+	--volume "$secret_volume:/run/secrets" \
+	--entrypoint /bin/sh \
+	"$image" -c 'printf "http://%s:8080/provider.yaml?token=%s\n" "$PROVIDER" "$SECRET" > /run/secrets/subscription; chmod 0444 /run/secrets/subscription'
 
 docker run --detach --rm \
 	--name "$provider" \
@@ -96,7 +105,7 @@ done
 if failure=$(docker run --rm \
 	--network none \
 	--volume "$cold_volume:/data" \
-	--mount "type=bind,source=${secret_file},target=/run/secrets/subscription,readonly" \
+	--volume "$secret_volume:/run/secrets:ro" \
 	"$image" 2>&1); then
 	echo "cold start succeeded without a reachable subscription" >&2
 	exit 1
@@ -115,7 +124,7 @@ docker run --detach \
 	--cap-drop ALL \
 	--security-opt no-new-privileges:true \
 	--volume "$volume:/data" \
-	--mount "type=bind,source=${secret_file},target=/run/secrets/subscription,readonly" \
+	--volume "$secret_volume:/run/secrets:ro" \
 	--publish 127.0.0.1::7890/tcp \
 	--publish 127.0.0.1::9090/tcp \
 	"$image" >/dev/null
