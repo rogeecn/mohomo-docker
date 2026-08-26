@@ -68,8 +68,8 @@ FROM alpine:${ALPINE_VERSION}
 RUN apk add --no-cache ca-certificates curl gzip tzdata \
     && addgroup -S ssclash \
     && adduser -S -G ssclash -h /opt/clash ssclash \
-    && mkdir -p /opt/clash /tmp/ssclash /usr/local/lib/ssclash /usr/local/share/ssclash \
-    && chown -R ssclash:ssclash /opt/clash /tmp/ssclash
+    && mkdir -p /data /opt/clash /tmp/ssclash /usr/local/lib/ssclash /usr/local/share/ssclash \
+    && chown -R ssclash:ssclash /data /opt/clash /tmp/ssclash
 COPY --from=bootstrap-builder /out/bootstrap /usr/local/bin/bootstrap
 COPY --from=release-assets /assets/ssclash /usr/local/bin/ssclash
 COPY --from=release-assets /assets/mihomo /usr/local/lib/ssclash/clash

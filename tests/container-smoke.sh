@@ -11,18 +11,21 @@ network="mohomo-network-smoke-${suffix}"
 legacy_network="mohomo-legacy-network-smoke-${suffix}"
 volume="mohomo-volume-smoke-${suffix}"
 legacy_volume="mohomo-legacy-volume-smoke-${suffix}"
+candidate_volume="mohomo-candidate-volume-smoke-${suffix}"
+candidate_secret_file=$(mktemp "${TMPDIR:-/tmp}/mohomo-candidate-secret.XXXXXX")
 secret="container-smoke-secret"
 admin_password="container-smoke-admin-password"
 
-case "$container:$unconfigured:$legacy_container:$provider:$network:$legacy_network:$volume:$legacy_volume" in
-mohomo-docker-smoke-*':mohomo-docker-unconfigured-'*':mohomo-docker-legacy-'*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-legacy-network-smoke-'*':mohomo-volume-smoke-'*':mohomo-legacy-volume-smoke-'*) ;;
+case "$container:$unconfigured:$legacy_container:$provider:$network:$legacy_network:$volume:$legacy_volume:$candidate_volume" in
+mohomo-docker-smoke-*':mohomo-docker-unconfigured-'*':mohomo-docker-legacy-'*':mohomo-provider-smoke-'*':mohomo-network-smoke-'*':mohomo-legacy-network-smoke-'*':mohomo-volume-smoke-'*':mohomo-legacy-volume-smoke-'*':mohomo-candidate-volume-smoke-'*) ;;
 *) echo "refusing unsafe cleanup targets" >&2; exit 1 ;;
 esac
 
 cleanup() {
 	docker container rm --force "$container" "$unconfigured" "$legacy_container" "$provider" >/dev/null 2>&1 || true
-	docker volume rm "$volume" "$legacy_volume" >/dev/null 2>&1 || true
+	docker volume rm "$volume" "$legacy_volume" "$candidate_volume" >/dev/null 2>&1 || true
 	docker network rm "$network" "$legacy_network" >/dev/null 2>&1 || true
+	rm -f "$candidate_secret_file"
 }
 trap cleanup EXIT INT TERM
 
@@ -34,6 +37,19 @@ wait_for_health() {
 		if [ "$attempt" -ge 30 ]; then
 			docker logs "$health_container" >&2
 			echo "container did not become healthy" >&2
+			exit 1
+		fi
+		sleep 1
+	done
+}
+
+wait_for_subscription() {
+	expected=$1
+	attempt=0
+	until docker exec "$provider" wget -qO- http://127.0.0.1:8080/provider.yaml | grep -F "$expected" >/dev/null; do
+		attempt=$((attempt + 1))
+		if [ "$attempt" -ge 10 ]; then
+			echo "subscription fixture did not serve expected content" >&2
 			exit 1
 		fi
 		sleep 1
@@ -124,17 +140,48 @@ docker run --detach --rm \
 	--name "$provider" \
 	--network "$network" \
 	--entrypoint /bin/sh \
-	"$image" -c 'while :; do printf "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\nproxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n" | nc -l -p 8080; done' >/dev/null
+	"$image" -c 'while :; do
+		if [ -f /tmp/invalid-subscription ]; then
+			printf "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\nproxies: ["
+		else
+			printf "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\nproxies:\n  - name: smoke-node\n    type: socks5\n    server: 127.0.0.1\n    port: 9\n"
+		fi | nc -l -p 8080
+	done' >/dev/null
 docker network connect "$legacy_network" "$provider"
-attempt=0
-until docker exec "$provider" wget -qO- http://127.0.0.1:8080/provider.yaml | grep -F 'name: smoke-node' >/dev/null; do
-	attempt=$((attempt + 1))
-	if [ "$attempt" -ge 10 ]; then
-		echo "subscription fixture did not become ready" >&2
-		exit 1
-	fi
-	sleep 1
-done
+wait_for_subscription 'name: smoke-node'
+
+printf 'http://%s:8080/provider.yaml?token=%s\n' "$provider" "$secret" > "$candidate_secret_file"
+chmod 0444 "$candidate_secret_file"
+docker volume create "$candidate_volume" >/dev/null
+docker run --rm \
+	--network "$network" \
+	--volume "$candidate_volume:/data" \
+	--mount "type=bind,source=${candidate_secret_file},target=/run/secrets/subscription,readonly" \
+	"$image" candidate >/dev/null
+last_good=$(docker run --rm \
+	--volume "$candidate_volume:/data" \
+	--entrypoint /bin/sh \
+	"$image" -c 'test -w /data; test -L /data/last-good; grep -F "name: smoke-node" /data/last-good/subscription.yaml >/dev/null; readlink /data/last-good')
+docker exec "$provider" touch /tmp/invalid-subscription
+wait_for_subscription 'proxies: ['
+if failure=$(docker run --rm \
+	--network "$network" \
+	--volume "$candidate_volume:/data" \
+	--mount "type=bind,source=${candidate_secret_file},target=/run/secrets/subscription,readonly" \
+	"$image" candidate 2>&1); then
+	echo "candidate accepted invalid YAML" >&2
+	exit 1
+fi
+if printf '%s\n' "$failure" | grep -F "$secret" >/dev/null; then
+	echo "candidate failure leaked subscription secret" >&2
+	exit 1
+fi
+docker run --rm \
+	--volume "$candidate_volume:/data" \
+	--entrypoint /bin/sh \
+	"$image" -c "test \"\$(readlink /data/last-good)\" = '$last_good'; grep -F 'name: smoke-node' /data/last-good/subscription.yaml >/dev/null"
+docker exec "$provider" rm /tmp/invalid-subscription
+wait_for_subscription 'name: smoke-node'
 
 docker volume create "$legacy_volume" >/dev/null
 docker run --rm \
@@ -287,4 +334,4 @@ assert_published_ports
 web_port=$(docker port "$container" 9091/tcp | awk -F: 'NR == 1 { print $NF }')
 assert_web_login_and_start "$web_port"
 
-echo "container smoke test passed: legacy config migrates and validates a synthetic subscription offline; fresh volume fails closed; authenticated 9091 survives same-volume rebuild; only 7890/9091 are published"
+echo "container smoke test passed: fresh candidate volume publishes and rolls back invalid YAML; legacy config migrates; fresh SSClash volume fails closed; authenticated 9091 survives same-volume rebuild; only 7890/9091 are published"
