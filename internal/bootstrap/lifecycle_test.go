@@ -137,6 +137,80 @@ func TestRunAndCandidateSerializeDataDirUpdates(t *testing.T) {
 	}
 }
 
+func TestRunWarmStartKeepsValidatedGenerationLocked(t *testing.T) {
+	fixture := newLifecycleFixture(t)
+	if err := PublishCandidate(context.Background(), fixture.config); err != nil {
+		t.Fatal(err)
+	}
+	firstTarget := readLastGood(t, fixture.config.DataDir)
+	fixture.setSubscription("second-node", http.StatusOK)
+	validated := make(chan struct{})
+	resume := make(chan struct{})
+	lifecycle := fixture.lifecycle(nil)
+	lifecycle.afterLastGoodValidated = func() {
+		close(validated)
+		<-resume
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- Run(ctx, lifecycle) }()
+	select {
+	case <-validated:
+	case <-time.After(5 * time.Second):
+		close(resume)
+		t.Fatal("Run did not pause after warm generation validation")
+	}
+
+	candidateStarted := make(chan struct{})
+	candidateResult := make(chan error, 1)
+	go func() {
+		close(candidateStarted)
+		candidateResult <- PublishCandidate(context.Background(), fixture.config)
+	}()
+	<-candidateStarted
+	select {
+	case err := <-candidateResult:
+		close(resume)
+		t.Fatalf("candidate bypassed the warm-start data lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := fixture.subscriptionRequests.Load(); got != 1 {
+		close(resume)
+		t.Fatalf("subscription requests = %d before warm start resumed, want 1", got)
+	}
+	if _, err := os.Stat(fixture.startedPath); !errors.Is(err, os.ErrNotExist) {
+		close(resume)
+		t.Fatalf("Mihomo started before warm validation resumed: %v", err)
+	}
+	close(resume)
+	fixture.waitStarted(t)
+	if err := <-candidateResult; err != nil {
+		t.Fatalf("concurrent PublishCandidate() error = %v", err)
+	}
+
+	activeTarget := "generations/a"
+	if firstTarget == activeTarget {
+		activeTarget = "generations/b"
+	}
+	if _, err := os.Stat(filepath.Join(fixture.config.DataDir, filepath.FromSlash(activeTarget))); err != nil {
+		t.Fatalf("active generation %q was removed: %v", activeTarget, err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.config.DataDir, "last-good")); err != nil {
+		t.Fatalf("last-good is dangling: %v", err)
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("Run() stopped after concurrent candidate: %v", err)
+	default:
+	}
+
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context cancellation", err)
+	}
+}
+
 func TestRunRollbackPersistenceFailureStopsMihomo(t *testing.T) {
 	fixture := newLifecycleFixture(t)
 	if err := PublishCandidate(context.Background(), fixture.config); err != nil {

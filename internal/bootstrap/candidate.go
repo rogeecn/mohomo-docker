@@ -38,10 +38,11 @@ type CandidateConfig struct {
 }
 
 type LifecycleConfig struct {
-	Candidate      CandidateConfig
-	ControllerURL  string
-	UpdateInterval time.Duration
-	Trigger        <-chan os.Signal
+	Candidate              CandidateConfig
+	ControllerURL          string
+	UpdateInterval         time.Duration
+	Trigger                <-chan os.Signal
+	afterLastGoodValidated func()
 }
 
 // PublishCandidate performs one Stage 1 update. Starting or reloading Mihomo is
@@ -155,63 +156,83 @@ func Run(ctx context.Context, config LifecycleConfig) error {
 		return err
 	}
 
-	var generation string
-	valid := withDataDirLock(config.Candidate.DataDir, func(dataDir string) error {
-		config.Candidate.DataDir = dataDir
-		var err error
-		generation, err = validLastGoodLocked(ctx, config.Candidate)
-		return err
-	})
-	warm := valid == nil
-	if !warm {
-		if err := PublishCandidate(ctx, config.Candidate); err != nil {
-			return fmt.Errorf("cold-start candidate failed: %w", err)
-		}
-		valid = withDataDirLock(config.Candidate.DataDir, func(dataDir string) error {
-			config.Candidate.DataDir = dataDir
-			var err error
-			generation, err = validLastGoodLocked(ctx, config.Candidate)
-			return err
-		})
-		if valid != nil {
-			return fmt.Errorf("published candidate is invalid: %w", valid)
-		}
-	}
-
-	serviceCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	mihomo := serviceCommand(serviceCtx, config.Candidate.MihomoBinary, generation, filepath.Join(generation, "config.yaml"))
-	if err := mihomo.Start(); err != nil {
-		return fmt.Errorf("start Mihomo: %w", err)
-	}
-	exit := make(chan error, 1)
-	go func() { exit <- mihomo.Wait() }()
 	client := config.Candidate.Client
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	if err := waitForController(ctx, client, controllerURL, exit); err != nil {
-		return err
+	var cancel context.CancelFunc
+	var exit chan error
+	var done chan struct{}
+	startupErr := withDataDirLock(config.Candidate.DataDir, func(dataDir string) error {
+		config.Candidate.DataDir = dataDir
+		generation, valid := validLastGoodLocked(ctx, config.Candidate)
+		warm := valid == nil
+		if !warm {
+			if err := publishCandidateLocked(ctx, config.Candidate); err != nil {
+				return fmt.Errorf("cold-start candidate failed: %w", err)
+			}
+			generation, valid = validLastGoodLocked(ctx, config.Candidate)
+			if valid != nil {
+				return fmt.Errorf("published candidate is invalid: %w", valid)
+			}
+		}
+		if warm && config.afterLastGoodValidated != nil {
+			config.afterLastGoodValidated()
+		}
+
+		serviceCtx, serviceCancel := context.WithCancel(ctx)
+		cancel = serviceCancel
+		mihomo := serviceCommand(serviceCtx, config.Candidate.MihomoBinary, generation, filepath.Join(generation, "config.yaml"))
+		if err := mihomo.Start(); err != nil {
+			cancel()
+			return fmt.Errorf("start Mihomo: %w", err)
+		}
+		exit = make(chan error, 1)
+		done = make(chan struct{})
+		go func() {
+			exit <- mihomo.Wait()
+			close(done)
+		}()
+		stop := func() {
+			cancel()
+			<-done
+		}
+		if err := waitForController(ctx, client, controllerURL, exit); err != nil {
+			stop()
+			return err
+		}
+		log.Printf("bootstrap: Mihomo started config=%s update_interval=%s", filepath.Base(generation), config.UpdateInterval)
+		if warm {
+			if err := updateAndReloadLocked(ctx, client, controllerURL, config.Candidate); err != nil {
+				stop()
+				return fmt.Errorf("fatal update stopped Mihomo: %w", err)
+			}
+		}
+		return nil
+	})
+	if startupErr != nil {
+		if cancel != nil {
+			cancel()
+			if done != nil {
+				<-done
+			}
+		}
+		return startupErr
 	}
-	log.Printf("bootstrap: Mihomo started config=%s update_interval=%s", filepath.Base(generation), config.UpdateInterval)
+	defer cancel()
 	failClosed := func(err error) error {
 		cancel()
-		<-exit
+		<-done
 		return fmt.Errorf("fatal update stopped Mihomo: %w", err)
 	}
 
-	if warm {
-		if err := updateAndReload(ctx, client, controllerURL, config.Candidate); err != nil {
-			return failClosed(err)
-		}
-	}
 	ticker := time.NewTicker(config.UpdateInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			cancel()
-			<-exit
+			<-done
 			return ctx.Err()
 		case err := <-exit:
 			if err == nil {
@@ -256,37 +277,42 @@ func validLastGoodLocked(ctx context.Context, config CandidateConfig) (string, e
 func updateAndReload(ctx context.Context, client *http.Client, controllerURL string, config CandidateConfig) error {
 	return withDataDirLock(config.DataDir, func(dataDir string) error {
 		config.DataDir = dataDir
-		previous, err := currentGeneration(filepath.Join(dataDir, "last-good"))
-		if err != nil || previous == "" {
-			return errors.Join(errors.New("last-good is unavailable during update"), err)
-		}
-		if err := publishCandidateLocked(ctx, config); err != nil {
-			if errors.Is(err, errPersistence) {
-				return err
-			}
-			log.Printf("bootstrap: update rejected; keeping last-good: %v", err)
-			return nil
-		}
-		next, err := currentGeneration(filepath.Join(dataDir, "last-good"))
-		if err == nil {
-			err = reloadMihomo(ctx, client, controllerURL, filepath.Join(dataDir, filepath.FromSlash(next), "config.yaml"))
-		}
-		if err == nil {
-			log.Print("bootstrap: configuration updated and reloaded")
-			return nil
-		}
-		if rollbackErr := config.replacePointer(filepath.Join(dataDir, "last-good"), previous); rollbackErr != nil {
-			return fmt.Errorf("restore last-good pointer after reload failure: %w", rollbackErr)
-		}
-		if rollbackErr := config.syncDirectory(dataDir); rollbackErr != nil {
-			return fmt.Errorf("persist restored last-good pointer after reload failure: %w", rollbackErr)
-		}
-		if rollbackErr := reloadMihomo(ctx, client, controllerURL, filepath.Join(dataDir, filepath.FromSlash(previous), "config.yaml")); rollbackErr != nil {
-			return fmt.Errorf("reload restored last-good after reload failure: %w", rollbackErr)
-		}
-		log.Printf("bootstrap: reload rejected; restored and reloaded last-good: %v", err)
-		return nil
+		return updateAndReloadLocked(ctx, client, controllerURL, config)
 	})
+}
+
+func updateAndReloadLocked(ctx context.Context, client *http.Client, controllerURL string, config CandidateConfig) error {
+	dataDir := config.DataDir
+	previous, err := currentGeneration(filepath.Join(dataDir, "last-good"))
+	if err != nil || previous == "" {
+		return errors.Join(errors.New("last-good is unavailable during update"), err)
+	}
+	if err := publishCandidateLocked(ctx, config); err != nil {
+		if errors.Is(err, errPersistence) {
+			return err
+		}
+		log.Printf("bootstrap: update rejected; keeping last-good: %v", err)
+		return nil
+	}
+	next, err := currentGeneration(filepath.Join(dataDir, "last-good"))
+	if err == nil {
+		err = reloadMihomo(ctx, client, controllerURL, filepath.Join(dataDir, filepath.FromSlash(next), "config.yaml"))
+	}
+	if err == nil {
+		log.Print("bootstrap: configuration updated and reloaded")
+		return nil
+	}
+	if rollbackErr := config.replacePointer(filepath.Join(dataDir, "last-good"), previous); rollbackErr != nil {
+		return fmt.Errorf("restore last-good pointer after reload failure: %w", rollbackErr)
+	}
+	if rollbackErr := config.syncDirectory(dataDir); rollbackErr != nil {
+		return fmt.Errorf("persist restored last-good pointer after reload failure: %w", rollbackErr)
+	}
+	if rollbackErr := reloadMihomo(ctx, client, controllerURL, filepath.Join(dataDir, filepath.FromSlash(previous), "config.yaml")); rollbackErr != nil {
+		return fmt.Errorf("reload restored last-good after reload failure: %w", rollbackErr)
+	}
+	log.Printf("bootstrap: reload rejected; restored and reloaded last-good: %v", err)
+	return nil
 }
 
 func reloadMihomo(ctx context.Context, client *http.Client, controllerURL, configPath string) error {
