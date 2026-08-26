@@ -101,3 +101,15 @@ func TestMihomoTemplateAndRuntimeAssetsArePinned(t *testing.T) {
 		}
 	}
 }
+
+func TestDockerBuildContextExcludesSubscriptionSecret(t *testing.T) {
+	t.Parallel()
+
+	content, err := os.ReadFile("../../.dockerignore")
+	if err != nil {
+		t.Fatalf("read .dockerignore: %v", err)
+	}
+	if !strings.Contains("\n"+string(content)+"\n", "\nsubscription.url\n") {
+		t.Fatal(".dockerignore does not exclude subscription.url")
+	}
+}

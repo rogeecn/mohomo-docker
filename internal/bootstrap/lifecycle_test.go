@@ -81,7 +81,7 @@ func TestRunReloadFailureRestoresLastGood(t *testing.T) {
 	}
 	wantTarget := readLastGood(t, fixture.config.DataDir)
 	fixture.setSubscription("rejected-node", http.StatusOK)
-	fixture.failNextReload.Store(true)
+	fixture.reloadFailures.Store(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
@@ -98,23 +98,125 @@ func TestRunReloadFailureRestoresLastGood(t *testing.T) {
 	}
 }
 
+func TestRunAndCandidateSerializeDataDirUpdates(t *testing.T) {
+	fixture := newLifecycleFixture(t)
+	if err := PublishCandidate(context.Background(), fixture.config); err != nil {
+		t.Fatal(err)
+	}
+	fixture.setSubscription("second-node", http.StatusOK)
+	fixture.blockNextSubscription.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- Run(ctx, fixture.lifecycle(nil)) }()
+	fixture.waitStarted(t)
+	select {
+	case <-fixture.subscriptionEntered:
+	case <-time.After(5 * time.Second):
+		close(fixture.subscriptionRelease)
+		t.Fatal("Run did not enter the locked candidate update")
+	}
+
+	candidateResult := make(chan error, 1)
+	go func() { candidateResult <- PublishCandidate(context.Background(), fixture.config) }()
+	select {
+	case err := <-candidateResult:
+		close(fixture.subscriptionRelease)
+		t.Fatalf("concurrent candidate bypassed the data lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(fixture.subscriptionRelease)
+	if err := <-candidateResult; err != nil {
+		t.Fatalf("concurrent PublishCandidate() error = %v", err)
+	}
+	assertContains(t, filepath.Join(fixture.config.DataDir, "last-good", "subscription.yaml"), "second-node")
+
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context cancellation", err)
+	}
+}
+
+func TestRunRollbackPersistenceFailureStopsMihomo(t *testing.T) {
+	fixture := newLifecycleFixture(t)
+	if err := PublishCandidate(context.Background(), fixture.config); err != nil {
+		t.Fatal(err)
+	}
+	wantTarget := readLastGood(t, fixture.config.DataDir)
+	fixture.setSubscription("rejected-node", http.StatusOK)
+	fixture.reloadFailures.Store(1)
+	var syncCalls atomic.Int32
+	fixture.config.directorySync = func(path string) error {
+		if syncCalls.Add(1) == 3 {
+			return errors.New("injected rollback sync failure")
+		}
+		return syncDirectory(path)
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- Run(context.Background(), fixture.lifecycle(nil)) }()
+	fixture.waitStarted(t)
+	err := waitResult(t, result)
+	if !strings.Contains(err.Error(), "persist restored last-good pointer") {
+		t.Fatalf("Run() error = %v, want rollback persistence failure", err)
+	}
+	if got := readLastGood(t, fixture.config.DataDir); got != wantTarget {
+		t.Fatalf("last-good = %q, want restored %q", got, wantTarget)
+	}
+	fixture.waitStopped(t)
+}
+
+func TestRunSecondReloadFailureStopsMihomo(t *testing.T) {
+	fixture := newLifecycleFixture(t)
+	if err := PublishCandidate(context.Background(), fixture.config); err != nil {
+		t.Fatal(err)
+	}
+	wantTarget := readLastGood(t, fixture.config.DataDir)
+	fixture.setSubscription("rejected-node", http.StatusOK)
+	fixture.reloadFailures.Store(2)
+
+	result := make(chan error, 1)
+	go func() { result <- Run(context.Background(), fixture.lifecycle(nil)) }()
+	fixture.waitStarted(t)
+	err := waitResult(t, result)
+	if !strings.Contains(err.Error(), "reload restored last-good") {
+		t.Fatalf("Run() error = %v, want second reload failure", err)
+	}
+	if got := readLastGood(t, fixture.config.DataDir); got != wantTarget {
+		t.Fatalf("last-good = %q, want restored %q", got, wantTarget)
+	}
+	fixture.waitStopped(t)
+}
+
 type lifecycleFixture struct {
-	config               CandidateConfig
-	controllerURL        string
-	startedPath          string
-	lock                 sync.RWMutex
-	response             string
-	status               int
-	subscriptionRequests atomic.Int32
-	reloadRequests       atomic.Int32
-	failNextReload       atomic.Bool
+	config                CandidateConfig
+	controllerURL         string
+	startedPath           string
+	lock                  sync.RWMutex
+	response              string
+	status                int
+	subscriptionRequests  atomic.Int32
+	reloadRequests        atomic.Int32
+	reloadFailures        atomic.Int32
+	blockNextSubscription atomic.Bool
+	subscriptionEntered   chan struct{}
+	subscriptionRelease   chan struct{}
 }
 
 func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 	t.Helper()
-	fixture := &lifecycleFixture{response: fullSubscription("first-node"), status: http.StatusOK}
+	fixture := &lifecycleFixture{
+		response:            fullSubscription("first-node"),
+		status:              http.StatusOK,
+		subscriptionEntered: make(chan struct{}),
+		subscriptionRelease: make(chan struct{}),
+	}
 	subscription := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		fixture.subscriptionRequests.Add(1)
+		if fixture.blockNextSubscription.CompareAndSwap(true, false) {
+			close(fixture.subscriptionEntered)
+			<-fixture.subscriptionRelease
+		}
 		fixture.lock.RLock()
 		defer fixture.lock.RUnlock()
 		writer.WriteHeader(fixture.status)
@@ -127,7 +229,7 @@ func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 			writer.WriteHeader(http.StatusOK)
 		case request.Method == http.MethodPut && request.URL.Path == "/configs":
 			fixture.reloadRequests.Add(1)
-			if fixture.failNextReload.CompareAndSwap(true, false) {
+			if fixture.consumeReloadFailure() {
 				http.Error(writer, "rejected", http.StatusInternalServerError)
 				return
 			}
@@ -159,7 +261,7 @@ if [ "${1:-}" = -t ]; then
   ! grep -F reject-validation "$directory/subscription.yaml" >/dev/null
   exit 0
 fi
-printf started > %q
+printf '%%s' $$ > %q
 trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `, fixture.startedPath))
@@ -198,6 +300,47 @@ func (fixture *lifecycleFixture) waitStarted(t *testing.T) {
 		_, err := os.Stat(fixture.startedPath)
 		return err == nil
 	})
+}
+
+func (fixture *lifecycleFixture) waitStopped(t *testing.T) {
+	t.Helper()
+	waitFor(t, func() bool {
+		pidBytes, err := os.ReadFile(fixture.startedPath)
+		if err != nil {
+			return false
+		}
+		var pid int
+		if _, err := fmt.Sscanf(string(pidBytes), "%d", &pid); err != nil {
+			return false
+		}
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	})
+}
+
+func (fixture *lifecycleFixture) consumeReloadFailure() bool {
+	for {
+		remaining := fixture.reloadFailures.Load()
+		if remaining == 0 {
+			return false
+		}
+		if fixture.reloadFailures.CompareAndSwap(remaining, remaining-1) {
+			return true
+		}
+	}
+}
+
+func waitResult(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("Run() error = nil")
+		}
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not fail closed")
+		return nil
+	}
 }
 
 func waitFor(t *testing.T, condition func() bool) {

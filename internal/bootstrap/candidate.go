@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -24,12 +25,16 @@ const (
 	defaultControllerURL = "http://127.0.0.1:9090"
 )
 
+var errPersistence = errors.New("candidate persistence failure")
+
 type CandidateConfig struct {
-	SecretPath   string
-	DataDir      string
-	TemplatePath string
-	MihomoBinary string
-	Client       *http.Client
+	SecretPath      string
+	DataDir         string
+	TemplatePath    string
+	MihomoBinary    string
+	Client          *http.Client
+	replaceLastGood func(string, string) error
+	directorySync   func(string) error
 }
 
 type LifecycleConfig struct {
@@ -42,16 +47,17 @@ type LifecycleConfig struct {
 // PublishCandidate performs one Stage 1 update. Starting or reloading Mihomo is
 // deliberately left to the lifecycle stage.
 func PublishCandidate(ctx context.Context, config CandidateConfig) error {
-	dataDir := filepath.Clean(config.DataDir)
-	if !filepath.IsAbs(dataDir) || dataDir == string(filepath.Separator) {
-		return fmt.Errorf("unsafe data directory %q", config.DataDir)
-	}
-	if err := ensureDirectory(dataDir); err != nil {
-		return err
-	}
+	return withDataDirLock(config.DataDir, func(dataDir string) error {
+		config.DataDir = dataDir
+		return publishCandidateLocked(ctx, config)
+	})
+}
+
+func publishCandidateLocked(ctx context.Context, config CandidateConfig) error {
+	dataDir := config.DataDir
 	generations := filepath.Join(dataDir, "generations")
 	if err := ensureDirectory(generations); err != nil {
-		return err
+		return persistenceError("prepare generations directory", err)
 	}
 	for path, label := range map[string]string{
 		config.TemplatePath: "Mihomo template",
@@ -97,20 +103,20 @@ func PublishCandidate(ctx context.Context, config CandidateConfig) error {
 	}
 	candidate, err := os.MkdirTemp(generations, ".candidate-")
 	if err != nil {
-		return fmt.Errorf("create candidate generation: %w", err)
+		return persistenceError("create candidate generation", err)
 	}
 	if err := os.Chmod(candidate, 0o700); err != nil {
 		_ = os.RemoveAll(candidate)
-		return fmt.Errorf("secure candidate generation: %w", err)
+		return persistenceError("secure candidate generation", err)
 	}
 	defer os.RemoveAll(candidate)
 
 	configPath := filepath.Join(candidate, "config.yaml")
 	if err := writePrivateFile(configPath, generated); err != nil {
-		return fmt.Errorf("write candidate config: %w", err)
+		return persistenceError("write candidate config", err)
 	}
 	if err := writePrivateFile(filepath.Join(candidate, "subscription.yaml"), subscription); err != nil {
-		return fmt.Errorf("write candidate subscription: %w", err)
+		return persistenceError("write candidate subscription", err)
 	}
 	if err := validateMihomoConfig(ctx, config.MihomoBinary, candidate, configPath); err != nil {
 		return errors.New("candidate configuration failed Mihomo validation")
@@ -118,24 +124,20 @@ func PublishCandidate(ctx context.Context, config CandidateConfig) error {
 
 	slot := filepath.Join(dataDir, filepath.FromSlash(next))
 	if err := os.RemoveAll(slot); err != nil {
-		return fmt.Errorf("clear inactive generation: %w", err)
+		return persistenceError("clear inactive generation", err)
 	}
 	if err := os.Rename(candidate, slot); err != nil {
-		return fmt.Errorf("publish candidate generation: %w", err)
+		return persistenceError("publish candidate generation", err)
 	}
-	if err := syncDirectory(generations); err != nil {
-		return err
+	if err := config.syncDirectory(generations); err != nil {
+		return persistenceError("sync generations directory", err)
 	}
-	if err := replaceSymlink(filepath.Join(dataDir, "last-good"), next); err != nil {
-		return err
+	if err := config.replacePointer(filepath.Join(dataDir, "last-good"), next); err != nil {
+		return persistenceError("publish last-good pointer", err)
 	}
-	if err := syncDirectory(dataDir); err != nil {
-		if current == "" {
-			_ = os.Remove(filepath.Join(dataDir, "last-good"))
-		} else {
-			_ = replaceSymlink(filepath.Join(dataDir, "last-good"), current)
-		}
-		return err
+	if err := config.syncDirectory(dataDir); err != nil {
+		rollbackErr := restoreLastGood(config, dataDir, current)
+		return errors.Join(persistenceError("sync data directory", err), rollbackErr)
 	}
 	return nil
 }
@@ -153,13 +155,24 @@ func Run(ctx context.Context, config LifecycleConfig) error {
 		return err
 	}
 
-	generation, valid := validLastGood(ctx, config.Candidate)
+	var generation string
+	valid := withDataDirLock(config.Candidate.DataDir, func(dataDir string) error {
+		config.Candidate.DataDir = dataDir
+		var err error
+		generation, err = validLastGoodLocked(ctx, config.Candidate)
+		return err
+	})
 	warm := valid == nil
 	if !warm {
 		if err := PublishCandidate(ctx, config.Candidate); err != nil {
 			return fmt.Errorf("cold-start candidate failed: %w", err)
 		}
-		generation, valid = validLastGood(ctx, config.Candidate)
+		valid = withDataDirLock(config.Candidate.DataDir, func(dataDir string) error {
+			config.Candidate.DataDir = dataDir
+			var err error
+			generation, err = validLastGoodLocked(ctx, config.Candidate)
+			return err
+		})
 		if valid != nil {
 			return fmt.Errorf("published candidate is invalid: %w", valid)
 		}
@@ -181,9 +194,16 @@ func Run(ctx context.Context, config LifecycleConfig) error {
 		return err
 	}
 	log.Printf("bootstrap: Mihomo started config=%s update_interval=%s", filepath.Base(generation), config.UpdateInterval)
+	failClosed := func(err error) error {
+		cancel()
+		<-exit
+		return fmt.Errorf("fatal update stopped Mihomo: %w", err)
+	}
 
 	if warm {
-		updateAndReload(ctx, client, controllerURL, config.Candidate)
+		if err := updateAndReload(ctx, client, controllerURL, config.Candidate); err != nil {
+			return failClosed(err)
+		}
 	}
 	ticker := time.NewTicker(config.UpdateInterval)
 	defer ticker.Stop()
@@ -199,14 +219,18 @@ func Run(ctx context.Context, config LifecycleConfig) error {
 			}
 			return fmt.Errorf("Mihomo exited: %w", err)
 		case <-ticker.C:
-			updateAndReload(ctx, client, controllerURL, config.Candidate)
+			if err := updateAndReload(ctx, client, controllerURL, config.Candidate); err != nil {
+				return failClosed(err)
+			}
 		case <-config.Trigger:
-			updateAndReload(ctx, client, controllerURL, config.Candidate)
+			if err := updateAndReload(ctx, client, controllerURL, config.Candidate); err != nil {
+				return failClosed(err)
+			}
 		}
 	}
 }
 
-func validLastGood(ctx context.Context, config CandidateConfig) (string, error) {
+func validLastGoodLocked(ctx context.Context, config CandidateConfig) (string, error) {
 	target, err := currentGeneration(filepath.Join(config.DataDir, "last-good"))
 	if err != nil {
 		return "", err
@@ -229,34 +253,40 @@ func validLastGood(ctx context.Context, config CandidateConfig) (string, error) 
 	return directory, nil
 }
 
-func updateAndReload(ctx context.Context, client *http.Client, controllerURL string, config CandidateConfig) {
-	previous, err := currentGeneration(filepath.Join(config.DataDir, "last-good"))
-	if err != nil || previous == "" {
-		log.Print("bootstrap: update skipped; last-good is unavailable")
-		return
-	}
-	if err := PublishCandidate(ctx, config); err != nil {
-		log.Printf("bootstrap: update rejected; keeping last-good: %v", err)
-		return
-	}
-	next, err := currentGeneration(filepath.Join(config.DataDir, "last-good"))
-	if err == nil {
-		err = reloadMihomo(ctx, client, controllerURL, filepath.Join(config.DataDir, filepath.FromSlash(next), "config.yaml"))
-	}
-	if err == nil {
-		log.Print("bootstrap: configuration updated and reloaded")
-		return
-	}
-	if rollbackErr := replaceSymlink(filepath.Join(config.DataDir, "last-good"), previous); rollbackErr != nil {
-		log.Print("bootstrap: reload rejected; could not restore last-good pointer")
-		return
-	}
-	_ = syncDirectory(config.DataDir)
-	if rollbackErr := reloadMihomo(ctx, client, controllerURL, filepath.Join(config.DataDir, filepath.FromSlash(previous), "config.yaml")); rollbackErr != nil {
-		log.Print("bootstrap: reload rejected; last-good restored but reload confirmation failed")
-		return
-	}
-	log.Printf("bootstrap: reload rejected; restored and reloaded last-good: %v", err)
+func updateAndReload(ctx context.Context, client *http.Client, controllerURL string, config CandidateConfig) error {
+	return withDataDirLock(config.DataDir, func(dataDir string) error {
+		config.DataDir = dataDir
+		previous, err := currentGeneration(filepath.Join(dataDir, "last-good"))
+		if err != nil || previous == "" {
+			return errors.Join(errors.New("last-good is unavailable during update"), err)
+		}
+		if err := publishCandidateLocked(ctx, config); err != nil {
+			if errors.Is(err, errPersistence) {
+				return err
+			}
+			log.Printf("bootstrap: update rejected; keeping last-good: %v", err)
+			return nil
+		}
+		next, err := currentGeneration(filepath.Join(dataDir, "last-good"))
+		if err == nil {
+			err = reloadMihomo(ctx, client, controllerURL, filepath.Join(dataDir, filepath.FromSlash(next), "config.yaml"))
+		}
+		if err == nil {
+			log.Print("bootstrap: configuration updated and reloaded")
+			return nil
+		}
+		if rollbackErr := config.replacePointer(filepath.Join(dataDir, "last-good"), previous); rollbackErr != nil {
+			return fmt.Errorf("restore last-good pointer after reload failure: %w", rollbackErr)
+		}
+		if rollbackErr := config.syncDirectory(dataDir); rollbackErr != nil {
+			return fmt.Errorf("persist restored last-good pointer after reload failure: %w", rollbackErr)
+		}
+		if rollbackErr := reloadMihomo(ctx, client, controllerURL, filepath.Join(dataDir, filepath.FromSlash(previous), "config.yaml")); rollbackErr != nil {
+			return fmt.Errorf("reload restored last-good after reload failure: %w", rollbackErr)
+		}
+		log.Printf("bootstrap: reload rejected; restored and reloaded last-good: %v", err)
+		return nil
+	})
 }
 
 func reloadMihomo(ctx context.Context, client *http.Client, controllerURL, configPath string) error {
@@ -318,6 +348,45 @@ func validateControllerURL(raw string) error {
 	return nil
 }
 
+func withDataDirLock(dataDir string, operation func(string) error) error {
+	dataDir = filepath.Clean(dataDir)
+	if !filepath.IsAbs(dataDir) || dataDir == string(filepath.Separator) {
+		return fmt.Errorf("unsafe data directory %q", dataDir)
+	}
+	if err := ensureDirectory(dataDir); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(dataDir, ".bootstrap.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("open data directory lock: %w", err)
+	}
+	if err := lock.Chmod(0o600); err != nil {
+		_ = lock.Close()
+		return fmt.Errorf("secure data directory lock: %w", err)
+	}
+	for {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		_ = lock.Close()
+		return fmt.Errorf("lock data directory: %w", err)
+	}
+
+	operationErr := operation(dataDir)
+	unlockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	closeErr := lock.Close()
+	if unlockErr != nil {
+		unlockErr = fmt.Errorf("unlock data directory: %w", unlockErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close data directory lock: %w", closeErr)
+	}
+	return errors.Join(operationErr, unlockErr, closeErr)
+}
+
 func ensureDirectory(path string) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -333,6 +402,44 @@ func ensureDirectory(path string) error {
 		return fmt.Errorf("data path %q is not a directory", path)
 	}
 	return nil
+}
+
+func (config CandidateConfig) replacePointer(path, target string) error {
+	if config.replaceLastGood != nil {
+		return config.replaceLastGood(path, target)
+	}
+	return replaceSymlink(path, target)
+}
+
+func (config CandidateConfig) syncDirectory(path string) error {
+	if config.directorySync != nil {
+		return config.directorySync(path)
+	}
+	return syncDirectory(path)
+}
+
+func restoreLastGood(config CandidateConfig, dataDir, target string) error {
+	path := filepath.Join(dataDir, "last-good")
+	var err error
+	if target == "" {
+		err = os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
+	} else {
+		err = config.replacePointer(path, target)
+	}
+	if err != nil {
+		return persistenceError("restore last-good pointer", err)
+	}
+	if err := config.syncDirectory(dataDir); err != nil {
+		return persistenceError("sync restored last-good pointer", err)
+	}
+	return nil
+}
+
+func persistenceError(action string, err error) error {
+	return fmt.Errorf("%w: %s: %w", errPersistence, action, err)
 }
 
 func readSubscriptionSecret(path string) (string, error) {

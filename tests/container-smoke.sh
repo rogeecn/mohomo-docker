@@ -163,6 +163,16 @@ docker kill --signal HUP "$container" >/dev/null
 wait_for_last_good second-node
 wait_for_log 'configuration updated and reloaded'
 host_curl "http://127.0.0.1:${controller_port}/providers/proxies/subscription" >/dev/null
+selection_group='%F0%9F%9A%80%20%E8%8A%82%E7%82%B9%E9%80%89%E6%8B%A9'
+group=$(host_curl "http://127.0.0.1:${controller_port}/proxies/${selection_group}")
+printf '%s\n' "$group" | grep -F '"DIRECT"' >/dev/null
+host_curl \
+	--request PUT \
+	--header 'Content-Type: application/json' \
+	--data '{"name":"DIRECT"}' \
+	"http://127.0.0.1:${controller_port}/proxies/${selection_group}" >/dev/null
+host_curl "http://127.0.0.1:${controller_port}/proxies/${selection_group}" \
+	| grep -F '"now":"DIRECT"' >/dev/null
 
 docker exec "$provider" /bin/sh -c 'printf "proxies: [" > /tmp/web/provider.yaml'
 docker restart "$container" >/dev/null
@@ -174,4 +184,4 @@ if docker logs "$container" 2>&1 | grep -F "$secret" >/dev/null; then
 fi
 docker exec "$container" /usr/local/bin/mihomo -t -d /data/last-good -f /data/last-good/config.yaml >/dev/null
 
-echo "container smoke test passed: cold fail-closed, warm recovery, HUP update, rollback, 7890, 9090, and ExternalUI"
+echo "container smoke test passed: cold fail-closed, warm recovery, HUP update, rollback, 7890, 9090, ExternalUI, and proxy switching"
