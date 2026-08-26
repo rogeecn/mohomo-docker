@@ -1,5 +1,6 @@
 .git
 .env
+subscription.url
 coverage.out
 tests
 README.md

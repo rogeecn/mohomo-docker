@@ -66,6 +66,7 @@ func TestPublishCandidateFailureMatrixKeepsLastGoodAndRedactsInput(t *testing.T)
 		response  string
 		status    int
 		secret    string
+		template  string
 		transport bool
 	}{
 		{name: "invalid secret URL", secret: "not-a-url-FAKE-SECRET"},
@@ -75,6 +76,7 @@ func TestPublishCandidateFailureMatrixKeepsLastGoodAndRedactsInput(t *testing.T)
 		{name: "oversized response", response: strings.Repeat("x", maxSubscriptionSize+1)},
 		{name: "invalid YAML", response: "proxies: ["},
 		{name: "missing proxies", response: "proxy-groups: []\n"},
+		{name: "generation failure", response: fullSubscription("new-node"), template: "[]\n"},
 		{name: "Mihomo rejection", response: fullSubscription("reject-validation")},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -109,6 +111,9 @@ func TestPublishCandidateFailureMatrixKeepsLastGoodAndRedactsInput(t *testing.T)
 				if err := os.WriteFile(config.SecretPath, []byte(testCase.secret), 0o600); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if testCase.template != "" {
+				config.TemplatePath = writeFixture(t, t.TempDir(), "config.yaml", testCase.template)
 			}
 			if testCase.transport {
 				config.Client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
@@ -222,4 +227,33 @@ func assertNotContains(t *testing.T, path, unwanted string) {
 	if strings.Contains(string(content), unwanted) {
 		t.Errorf("%s contains %q", path, unwanted)
 	}
+}
+
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != want {
+		t.Fatalf("%s = %q, want %q", path, content, want)
+	}
+}
+
+func writeFixture(t *testing.T, directory, name, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
