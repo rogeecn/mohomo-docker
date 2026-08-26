@@ -4,7 +4,8 @@ bind-address: "*"
 mode: rule
 log-level: info
 ipv6: false
-external-controller: 127.0.0.1:9090
+external-controller: 0.0.0.0:9090
+external-ui: /usr/local/share/mihomo/ui
 
 profile:
   store-selected: false
@@ -143,38 +144,38 @@ proxy-groups:
     proxies: [🚀 节点选择, ♻️ 自动选择, DIRECT, 🇭🇰 香港节点, 🇨🇳 台湾节点, 🇸🇬 狮城节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇰🇷 韩国节点, 🚀 手动切换]
 
 rule-providers:
-  LocalAreaNetwork: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/LocalAreaNetwork.yaml}
-  UnBan: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/UnBan.yaml}
-  BanAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/BanAD.yaml}
-  BanProgramAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/BanProgramAD.yaml}
-  GoogleFCM: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/GoogleFCM.yaml}
-  GoogleCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/GoogleCN.yaml}
-  SteamCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/SteamCN.yaml}
-  Bing: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Bing.yaml}
-  OneDrive: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/OneDrive.yaml}
-  Microsoft: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Microsoft.yaml}
-  Apple: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Apple.yaml}
-  Telegram: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Telegram.yaml}
-  AI: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/AI.yaml}
-  OpenAi: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/OpenAi.yaml}
-  NetEaseMusic: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/NetEaseMusic.yaml}
-  Epic: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Epic.yaml}
-  Origin: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Origin.yaml}
-  Sony: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Sony.yaml}
-  Steam: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Steam.yaml}
-  Nintendo: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Nintendo.yaml}
-  YouTube: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/YouTube.yaml}
-  Netflix: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Netflix.yaml}
-  Bahamut: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Bahamut.yaml}
-  BilibiliHMT: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/BilibiliHMT.yaml}
-  Bilibili: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Ruleset/Bilibili.yaml}
-  ChinaMedia: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaMedia.yaml}
-  ProxyMedia: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ProxyMedia.yaml}
-  ProxyGFWlist: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ProxyGFWlist.yaml}
-  ChinaDomain: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/ChinaDomain.yaml}
-  ChinaCompanyIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaCompanyIp.yaml}
-  ChinaIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/ssclash/rules/ChinaIp.yaml}
-  Download: {type: file, behavior: classical, format: yaml, path: /usr/local/share/ssclash/rules/Download.yaml}
+  LocalAreaNetwork: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/LocalAreaNetwork.yaml}
+  UnBan: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/UnBan.yaml}
+  BanAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/BanAD.yaml}
+  BanProgramAD: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/BanProgramAD.yaml}
+  GoogleFCM: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/GoogleFCM.yaml}
+  GoogleCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/GoogleCN.yaml}
+  SteamCN: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/SteamCN.yaml}
+  Bing: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Bing.yaml}
+  OneDrive: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/OneDrive.yaml}
+  Microsoft: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Microsoft.yaml}
+  Apple: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Apple.yaml}
+  Telegram: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Telegram.yaml}
+  AI: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/AI.yaml}
+  OpenAi: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/OpenAi.yaml}
+  NetEaseMusic: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/NetEaseMusic.yaml}
+  Epic: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Epic.yaml}
+  Origin: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Origin.yaml}
+  Sony: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Sony.yaml}
+  Steam: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Steam.yaml}
+  Nintendo: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Nintendo.yaml}
+  YouTube: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/YouTube.yaml}
+  Netflix: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Netflix.yaml}
+  Bahamut: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Bahamut.yaml}
+  BilibiliHMT: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/BilibiliHMT.yaml}
+  Bilibili: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Ruleset/Bilibili.yaml}
+  ChinaMedia: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/ChinaMedia.yaml}
+  ProxyMedia: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/ProxyMedia.yaml}
+  ProxyGFWlist: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/ProxyGFWlist.yaml}
+  ChinaDomain: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/ChinaDomain.yaml}
+  ChinaCompanyIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/mihomo/rules/ChinaCompanyIp.yaml}
+  ChinaIp: {type: file, behavior: ipcidr, format: yaml, path: /usr/local/share/mihomo/rules/ChinaIp.yaml}
+  Download: {type: file, behavior: classical, format: yaml, path: /usr/local/share/mihomo/rules/Download.yaml}
 
 rules:
   - RULE-SET,LocalAreaNetwork,🎯 全球直连

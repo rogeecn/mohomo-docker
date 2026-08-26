@@ -3,9 +3,11 @@ package bootstrap
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,7 +18,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const maxSecretSize = 4096
+const (
+	maxSecretSize        = 4096
+	maxSubscriptionSize  = 16 << 20
+	defaultControllerURL = "http://127.0.0.1:9090"
+)
 
 type CandidateConfig struct {
 	SecretPath   string
@@ -24,6 +30,13 @@ type CandidateConfig struct {
 	TemplatePath string
 	MihomoBinary string
 	Client       *http.Client
+}
+
+type LifecycleConfig struct {
+	Candidate      CandidateConfig
+	ControllerURL  string
+	UpdateInterval time.Duration
+	Trigger        <-chan os.Signal
 }
 
 // PublishCandidate performs one Stage 1 update. Starting or reloading Mihomo is
@@ -116,7 +129,193 @@ func PublishCandidate(ctx context.Context, config CandidateConfig) error {
 	if err := replaceSymlink(filepath.Join(dataDir, "last-good"), next); err != nil {
 		return err
 	}
-	return syncDirectory(dataDir)
+	if err := syncDirectory(dataDir); err != nil {
+		if current == "" {
+			_ = os.Remove(filepath.Join(dataDir, "last-good"))
+		} else {
+			_ = replaceSymlink(filepath.Join(dataDir, "last-good"), current)
+		}
+		return err
+	}
+	return nil
+}
+
+// Run starts the last known-good configuration and owns Mihomo until ctx ends.
+func Run(ctx context.Context, config LifecycleConfig) error {
+	if config.UpdateInterval <= 0 {
+		return errors.New("update interval must be positive")
+	}
+	controllerURL := strings.TrimRight(config.ControllerURL, "/")
+	if controllerURL == "" {
+		controllerURL = defaultControllerURL
+	}
+	if err := validateControllerURL(controllerURL); err != nil {
+		return err
+	}
+
+	generation, valid := validLastGood(ctx, config.Candidate)
+	warm := valid == nil
+	if !warm {
+		if err := PublishCandidate(ctx, config.Candidate); err != nil {
+			return fmt.Errorf("cold-start candidate failed: %w", err)
+		}
+		generation, valid = validLastGood(ctx, config.Candidate)
+		if valid != nil {
+			return fmt.Errorf("published candidate is invalid: %w", valid)
+		}
+	}
+
+	serviceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	mihomo := serviceCommand(serviceCtx, config.Candidate.MihomoBinary, generation, filepath.Join(generation, "config.yaml"))
+	if err := mihomo.Start(); err != nil {
+		return fmt.Errorf("start Mihomo: %w", err)
+	}
+	exit := make(chan error, 1)
+	go func() { exit <- mihomo.Wait() }()
+	client := config.Candidate.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	if err := waitForController(ctx, client, controllerURL, exit); err != nil {
+		return err
+	}
+	log.Printf("bootstrap: Mihomo started config=%s update_interval=%s", filepath.Base(generation), config.UpdateInterval)
+
+	if warm {
+		updateAndReload(ctx, client, controllerURL, config.Candidate)
+	}
+	ticker := time.NewTicker(config.UpdateInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-exit
+			return ctx.Err()
+		case err := <-exit:
+			if err == nil {
+				return errors.New("Mihomo exited")
+			}
+			return fmt.Errorf("Mihomo exited: %w", err)
+		case <-ticker.C:
+			updateAndReload(ctx, client, controllerURL, config.Candidate)
+		case <-config.Trigger:
+			updateAndReload(ctx, client, controllerURL, config.Candidate)
+		}
+	}
+}
+
+func validLastGood(ctx context.Context, config CandidateConfig) (string, error) {
+	target, err := currentGeneration(filepath.Join(config.DataDir, "last-good"))
+	if err != nil {
+		return "", err
+	}
+	if target == "" {
+		return "", errors.New("last-good is missing")
+	}
+	directory := filepath.Join(config.DataDir, filepath.FromSlash(target))
+	for path, label := range map[string]string{
+		filepath.Join(directory, "config.yaml"):       "last-good config",
+		filepath.Join(directory, "subscription.yaml"): "last-good subscription",
+	} {
+		if err := validateSource(path, label); err != nil {
+			return "", err
+		}
+	}
+	if err := validateMihomoConfig(ctx, config.MihomoBinary, directory, filepath.Join(directory, "config.yaml")); err != nil {
+		return "", errors.New("last-good failed Mihomo validation")
+	}
+	return directory, nil
+}
+
+func updateAndReload(ctx context.Context, client *http.Client, controllerURL string, config CandidateConfig) {
+	previous, err := currentGeneration(filepath.Join(config.DataDir, "last-good"))
+	if err != nil || previous == "" {
+		log.Print("bootstrap: update skipped; last-good is unavailable")
+		return
+	}
+	if err := PublishCandidate(ctx, config); err != nil {
+		log.Printf("bootstrap: update rejected; keeping last-good: %v", err)
+		return
+	}
+	next, err := currentGeneration(filepath.Join(config.DataDir, "last-good"))
+	if err == nil {
+		err = reloadMihomo(ctx, client, controllerURL, filepath.Join(config.DataDir, filepath.FromSlash(next), "config.yaml"))
+	}
+	if err == nil {
+		log.Print("bootstrap: configuration updated and reloaded")
+		return
+	}
+	if rollbackErr := replaceSymlink(filepath.Join(config.DataDir, "last-good"), previous); rollbackErr != nil {
+		log.Print("bootstrap: reload rejected; could not restore last-good pointer")
+		return
+	}
+	_ = syncDirectory(config.DataDir)
+	if rollbackErr := reloadMihomo(ctx, client, controllerURL, filepath.Join(config.DataDir, filepath.FromSlash(previous), "config.yaml")); rollbackErr != nil {
+		log.Print("bootstrap: reload rejected; last-good restored but reload confirmation failed")
+		return
+	}
+	log.Printf("bootstrap: reload rejected; restored and reloaded last-good: %v", err)
+}
+
+func reloadMihomo(ctx context.Context, client *http.Client, controllerURL, configPath string) error {
+	body, err := json.Marshal(map[string]string{"path": configPath})
+	if err != nil {
+		return errors.New("encode Mihomo reload request")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, controllerURL+"/configs?force=true", bytes.NewReader(body))
+	if err != nil {
+		return errors.New("create Mihomo reload request")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("Mihomo reload request failed")
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("Mihomo reload returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func waitForController(ctx context.Context, client *http.Client, controllerURL string, exit <-chan error) error {
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, controllerURL+"/version", nil)
+		if response, err := client.Do(request); err == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			if response.StatusCode >= 200 && response.StatusCode < 300 {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-exit:
+			if err == nil {
+				return errors.New("Mihomo exited before controller became ready")
+			}
+			return fmt.Errorf("Mihomo exited before controller became ready: %w", err)
+		case <-timeout.C:
+			return errors.New("Mihomo controller did not become ready")
+		case <-ticker.C:
+		}
+	}
+}
+
+func validateControllerURL(raw string) error {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return errors.New("controller URL must be an absolute HTTP(S) URL")
+	}
+	return nil
 }
 
 func ensureDirectory(path string) error {
