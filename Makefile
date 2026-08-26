@@ -16,4 +16,4 @@ down:
 	docker compose down
 
 logs:
-	docker compose logs -f ssclash
+	docker compose logs -f mihomo
