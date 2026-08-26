@@ -61,6 +61,10 @@ wait_for_log() {
 	done
 }
 
+host_curl() {
+	docker run --rm --network host --entrypoint curl "$image" --fail --silent --show-error "$@"
+}
+
 printf 'http://%s:8080/provider.yaml?token=%s\n' "$provider" "$secret" > "$secret_file"
 chmod 0444 "$secret_file"
 
@@ -138,8 +142,8 @@ printf '%s\n' "$published" | grep -F '9090/tcp -> 127.0.0.1:' >/dev/null
 proxy_port=$(docker port "$container" 7890/tcp | awk -F: 'NR == 1 {print $NF}')
 controller_port=$(docker port "$container" 9090/tcp | awk -F: 'NR == 1 {print $NF}')
 docker run --rm --network host --entrypoint /bin/sh "$image" -c "nc -z 127.0.0.1 $proxy_port"
-curl --fail --silent --show-error "http://127.0.0.1:${controller_port}/version" >/dev/null
-curl --fail --silent --show-error "http://127.0.0.1:${controller_port}/ui/" | grep -Fi '<title>' >/dev/null
+host_curl "http://127.0.0.1:${controller_port}/version" >/dev/null
+host_curl "http://127.0.0.1:${controller_port}/ui/" | grep -Fi '<title>' >/dev/null
 docker exec "$container" ps | grep -F '/usr/local/bin/mihomo' >/dev/null
 if docker exec "$container" touch /read-only-root >/dev/null 2>&1; then
 	echo "container root filesystem is writable" >&2
@@ -158,7 +162,7 @@ docker exec "$provider" /bin/sh -c 'printf "proxies:\n  - name: second-node\n   
 docker kill --signal HUP "$container" >/dev/null
 wait_for_last_good second-node
 wait_for_log 'configuration updated and reloaded'
-curl --fail --silent --show-error "http://127.0.0.1:${controller_port}/providers/proxies/subscription" >/dev/null
+host_curl "http://127.0.0.1:${controller_port}/providers/proxies/subscription" >/dev/null
 
 docker exec "$provider" /bin/sh -c 'printf "proxies: [" > /tmp/web/provider.yaml'
 docker restart "$container" >/dev/null
