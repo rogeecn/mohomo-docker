@@ -19,6 +19,12 @@ for workflow in "$github_workflow" "$gitea_workflow"; do
 	grep -F '  workflow_dispatch:' "$workflow" >/dev/null
 done
 
+gitea_trigger_count=$(awk '/^on:/ { in_on = 1; next } in_on && /^[^ ]/ { exit } in_on && /^  [a-z_]+:/ { count++ } END { print count + 0 }' "$gitea_workflow")
+if [ "$gitea_trigger_count" -ne 3 ] || [ "$(grep -Fc '      - main' "$gitea_workflow")" -ne 2 ]; then
+	echo "Gitea workflow must only run for main pushes, main pull requests, and manual dispatches" >&2
+	exit 1
+fi
+
 grep -F 'packages: write' "$github_workflow" >/dev/null
 # Match the GitHub expression literally.
 # shellcheck disable=SC2016
@@ -33,8 +39,29 @@ grep -F 'push: ${{ github.event_name != '\''pull_request'\'' }}' "$github_workfl
 
 grep -F 'run: ./scripts/test.sh' "$gitea_workflow" >/dev/null
 grep -F 'run: ./tests/container-smoke.sh' "$gitea_workflow" >/dev/null
+grep -F 'git.ipao.vip/rogee/mohomo-docker' "$gitea_workflow" >/dev/null
+# Match Gitea expressions literally.
+# shellcheck disable=SC2016
+grep -F '${{ secrets.REGISTRY_TOKEN }}' "$gitea_workflow" >/dev/null
+# shellcheck disable=SC2016
+grep -F 'sha-${{ gitea.sha }}' "$gitea_workflow" >/dev/null
+grep -F 'docker login git.ipao.vip' "$gitea_workflow" >/dev/null
+grep -F 'docker push "$IMAGE_NAME:latest"' "$gitea_workflow" >/dev/null
+grep -F 'api/v1/packages/rogee/container/mohomo-docker' "$gitea_workflow" >/dev/null
+grep -F '/link/mohomo-docker' "$gitea_workflow" >/dev/null
+
+publish_condition="if: gitea.event_name != 'pull_request'"
+if [ "$(grep -Fc "$publish_condition" "$gitea_workflow")" -ne 3 ]; then
+	echo "every Gitea publishing step must be disabled for pull requests" >&2
+	exit 1
+fi
 if grep -Ei 'ghcr\.io|github\.|GITHUB_TOKEN|packages: write|docker/(login|build-push)-action' "$gitea_workflow" >/dev/null; then
 	echo "Gitea workflow must not depend on GitHub publishing" >&2
+	exit 1
+fi
+
+if grep -Ei 'gitea\.|REGISTRY_TOKEN|git\.ipao\.vip' "$github_workflow" >/dev/null; then
+	echo "GitHub workflow must not depend on Gitea publishing" >&2
 	exit 1
 fi
 

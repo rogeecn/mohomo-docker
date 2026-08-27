@@ -82,6 +82,14 @@ The image pins and SHA-256 verifies Mihomo `v1.19.30`, MetaCubeXD `v1.273.0`, an
 
 The container runs as an unprivileged user with all capabilities dropped, a read-only root filesystem, and only `/data` writable. Do not publish a derivative image without respecting the upstream Mihomo, MetaCubeXD, and ACL4SSR licenses.
 
+## CI image publishing
+
+GitHub Actions publishes to `ghcr.io/<github.repository>`. Gitea Actions publishes the same tested image to `git.ipao.vip/rogee/mohomo-docker` with `latest` and `sha-<full-commit>` tags. The workflows are independent and do not share registry credentials or provider contexts.
+
+Before enabling Gitea publishing, add a repository Actions secret named `REGISTRY_TOKEN`. It must be a Gitea token whose owner can push packages for `rogee` and link the resulting container package to `rogee/mohomo-docker`. Keep the token out of files and logs, and rotate it in Gitea without changing the workflow.
+
+Gitea publishes only after tests and the container smoke test pass on a `main` push or manual workflow dispatch. Pull requests run those validations but skip secret use, registry login, image push, and package linking. A failed link check leaves the pushed image intact; fix the token permissions and rerun the workflow to retry the idempotent link step.
+
 ## Local acceptance
 
 ```sh

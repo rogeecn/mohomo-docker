@@ -31,3 +31,34 @@ jobs:
 
       - name: Build and run container smoke test
         run: ./tests/container-smoke.sh
+
+      - name: Log in to Gitea Container Registry
+        if: gitea.event_name != 'pull_request'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login git.ipao.vip --username "${{ gitea.actor }}" --password-stdin
+
+      - name: Publish tested image
+        if: gitea.event_name != 'pull_request'
+        env:
+          IMAGE_NAME: git.ipao.vip/rogee/mohomo-docker
+          SHA_TAG: sha-${{ gitea.sha }}
+        run: |
+          docker tag mohomo-docker:smoke "$IMAGE_NAME:latest"
+          docker tag mohomo-docker:smoke "$IMAGE_NAME:$SHA_TAG"
+          docker push "$IMAGE_NAME:latest"
+          docker push "$IMAGE_NAME:$SHA_TAG"
+
+      - name: Link package to repository
+        if: gitea.event_name != 'pull_request'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          package_api=https://git.ipao.vip/api/v1/packages/rogee/container/mohomo-docker
+          linked_repo="$(curl --fail --silent --show-error --header "Authorization: token $REGISTRY_TOKEN" "$package_api/-/latest" | jq -r '.repository.full_name // empty')"
+          if [ "$linked_repo" != rogee/mohomo-docker ]; then
+            curl --fail --silent --show-error --request POST \
+              --header "Authorization: token $REGISTRY_TOKEN" \
+              "$package_api/-/link/mohomo-docker"
+          fi
+          test "$(curl --fail --silent --show-error --header "Authorization: token $REGISTRY_TOKEN" "$package_api/-/latest" | jq -r '.repository.full_name // empty')" = rogee/mohomo-docker
